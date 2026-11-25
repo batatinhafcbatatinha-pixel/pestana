@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.withStyle
 import io.github.batatinha.pestana.AppState
 
 @Composable
@@ -58,13 +59,22 @@ fun SettingsScreen(state: AppState) {
         TopBar("Ajustes", onBack = { state.back() })
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             SectionTitle("Tema de leitura")
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ThemeCard(null, s.theme == "auto") { s.putTheme("auto") }
-                Themes.all.forEach { th -> ThemeCard(th, s.theme == th.id) { s.putTheme(th.id) } }
+            androidx.compose.runtime.CompositionLocalProvider(LocalChordColor provides s.chordColor, LocalSettingsBox provides s.chordBox) {
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ThemeCard(null, s.theme == "auto") { s.putTheme("auto") }
+                    Themes.all.forEach { th -> ThemeCard(th, s.theme == th.id) { s.putTheme(th.id) } }
+                }
             }
             Column(Modifier.padding(horizontal = 20.dp)) {
                 Stepper("Tamanho da letra", "${s.fontSize.toInt()}", { s.putFontSize(s.fontSize - 1) }, { s.putFontSize(s.fontSize + 1) })
                 Stepper("Espaçamento entre linhas", "%.2f".format(s.lineSpacing), { s.putLineSpacing(s.lineSpacing - 0.05f) }, { s.putLineSpacing(s.lineSpacing + 0.05f) })
+            }
+            SectionTitle("Cor dos acordes")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChordColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.chordColor == i) { s.putChordColor(i) } }
+            }
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                ToggleRow("Fundo destacado nos acordes", s.chordBox, "Um realce atrás de cada acorde") { s.putChordBox(it) }
             }
             SectionTitle("Cifras")
             Column(Modifier.padding(horizontal = 20.dp)) {
@@ -104,16 +114,30 @@ fun SettingsScreen(state: AppState) {
 @Composable
 private fun ThemeCard(th: ReadingTheme?, selected: Boolean, onClick: () -> Unit) {
     val cur = LocalReading.current
-    val p = th ?: Themes.resolve("auto")
+    val p = ChordColors.apply(th ?: Themes.resolve("auto"), LocalChordColor.current)
     Column(
         Modifier.width(118.dp).clip(RoundedCornerShape(14.dp)).background(p.bg)
             .border(if (selected) 2.dp else 1.dp, if (selected) cur.chord else cur.line, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick).padding(12.dp),
     ) {
-        Text("G      D/F#", color = p.chord, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(
+            androidx.compose.ui.text.buildAnnotatedString {
+                val st = androidx.compose.ui.text.SpanStyle(
+                    color = p.chord, fontWeight = FontWeight.ExtraBold,
+                    background = if (LocalSettingsBox.current) p.chordBg else androidx.compose.ui.graphics.Color.Unspecified,
+                )
+                withStyle(st) { append("G") }
+                append("      ")
+                withStyle(st) { append("D/F#") }
+            },
+            fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+        )
         Text("Quando eu ", color = p.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Text("e|--3--2--", color = p.tab, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
         Spacer(Modifier.height(6.dp))
         Text(th?.name ?: "Do sistema", color = p.muted, fontSize = 11.sp, maxLines = 1)
     }
 }
+
+private val LocalChordColor = androidx.compose.runtime.compositionLocalOf { 0 }
+private val LocalSettingsBox = androidx.compose.runtime.compositionLocalOf { true }

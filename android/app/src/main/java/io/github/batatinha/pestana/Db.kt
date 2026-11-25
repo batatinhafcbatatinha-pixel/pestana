@@ -12,7 +12,7 @@ import org.json.JSONObject
  * downloaded sheets (offline cache), favorites, playlists, per-song settings
  * and history. No account, no server.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 1) {
+class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -31,9 +31,35 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 1) {
         )
         db.execSQL("CREATE TABLE prefs(song_id TEXT PRIMARY KEY, transpose INTEGER, speed INTEGER, simplify INTEGER, capo INTEGER)")
         db.execSQL("CREATE TABLE recents(song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, ts INTEGER)")
+        createImages(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    /** Picture URLs by artist slug or "artist/album" key (only URLs; bitmaps stay in memory). */
+    private fun createImages(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY, url TEXT NOT NULL)")
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) createImages(db)
+    }
+
+    fun allImages(): Map<String, String> = readableDatabase.rawQuery("SELECT key, url FROM images", null).use { c ->
+        buildMap { while (c.moveToNext()) put(c.getString(0), c.getString(1)) }
+    }
+
+    fun saveImages(map: Map<String, String>) {
+        if (map.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            map.forEach { (k, v) ->
+                db.insertWithOnConflict("images", null, ContentValues().apply { put("key", k); put("url", v) }, SQLiteDatabase.CONFLICT_REPLACE)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     override fun onConfigure(db: SQLiteDatabase) {
         db.enableWriteAheadLogging()

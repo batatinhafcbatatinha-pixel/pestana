@@ -152,7 +152,7 @@ fun ImportPlaylistScreen(state: AppState, initialLink: String) {
                         OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true, label = { Text("Nome da playlist") })
                         SectionTitle("${p.songs.size} músicas")
                     }
-                    items(p.songs, key = { it.id }) { s -> ListRow(s.title, s.artist, leading = { Monogram(s.title, Ic.Note, round = false) }) {} }
+                    items(p.songs, key = { it.id }) { s -> ListRow(s.title, s.artist, leading = { SongThumb(s) }) {} }
                 } else {
                     item { SectionTitle("${p.playlists.size} playlists neste perfil") }
                     items(p.playlists, key = { it.url }) { pl ->

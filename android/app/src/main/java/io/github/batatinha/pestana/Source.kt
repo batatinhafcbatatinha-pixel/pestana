@@ -78,7 +78,7 @@ object Source {
             val dns = d.optString("dns")
             if (dns.isEmpty()) continue
             when (d.optString("tipo")) {
-                "1" -> artists += ArtistRef(dns, d.optString("art").ifBlank { d.optString("txt") })
+                "1" -> artists += ArtistRef(dns, d.optString("art").ifBlank { d.optString("txt") }, d.optString("imgm"))
                 "2" -> {
                     val url = d.optString("url")
                     if (url.isNotEmpty()) songs += SongRef(
@@ -87,32 +87,62 @@ object Source {
                     )
                 }
                 "6" -> albums += AlbumRef(
-                    d.optString("url_album"), d.optString("txt").trim(), d.optString("art"), dns, d.optString("ano"),
+                    d.optString("url_album"), d.optString("txt").trim(), d.optString("art"), dns, d.optString("ano"), d.optString("imgm"),
                 )
             }
         }
+        // Song results carry the artist's photo: remember it for every list.
+        val pics = HashMap<String, String>()
+        for (i in 0 until docs.length()) {
+            val d = docs.getJSONObject(i)
+            val img = d.optString("imgm")
+            if (img.isEmpty()) continue
+            when (d.optString("tipo")) {
+                "1", "2" -> pics.putIfAbsent(d.optString("dns"), img)
+                "6" -> pics["${d.optString("dns")}/${d.optString("url_album")}"] = img
+            }
+        }
+        Images.remember(pics)
         return SearchResults(artists, songs, albums)
     }
 
-    /** Songs of an artist the search knows about (several queries, merged). */
-    suspend fun artistSongs(ctx: Context, a: ArtistRef): Pair<List<SongRef>, List<AlbumRef>> {
+    // Lists already loaded stay in memory, so going back to an artist or album is instant.
+    private val artistCache = HashMap<String, Pair<List<SongRef>, List<AlbumRef>>>()
+    private val albumCache = HashMap<String, List<SongRef>>()
+
+    fun cachedArtist(slug: String) = artistCache[slug]
+    fun cachedAlbum(key: String) = albumCache[key]
+
+    /**
+     * Songs of an artist the search knows about. Several queries are merged and
+     * each partial result is handed to `onUpdate` as it arrives.
+     */
+    suspend fun artistSongs(ctx: Context, a: ArtistRef, onUpdate: (List<SongRef>, List<AlbumRef>) -> Unit) {
+        artistCache[a.slug]?.let { onUpdate(it.first, it.second); return }
         val songs = LinkedHashMap<String, SongRef>()
         val albums = LinkedHashMap<String, AlbumRef>()
         for (q in listOf(a.name, "${a.name} cifra", "${a.name} ao vivo", "${a.name} acústico")) {
             val r = runCatching { search(ctx, q) }.getOrNull() ?: continue
             r.songs.filter { it.artistSlug == a.slug }.forEach { songs.putIfAbsent(it.id, it) }
             r.albums.filter { it.artistSlug == a.slug }.forEach { albums.putIfAbsent(it.slug, it) }
+            onUpdate(songs.values.toList(), albums.values.sortedByDescending { it.year })
         }
-        return songs.values.toList() to albums.values.sortedByDescending { it.year }
+        val result = songs.values.toList() to albums.values.sortedByDescending { it.year }
+        if (result.first.isNotEmpty()) artistCache[a.slug] = result
+        onUpdate(result.first, result.second)
     }
 
-    suspend fun albumSongs(ctx: Context, a: AlbumRef): List<SongRef> {
+    suspend fun albumSongs(ctx: Context, a: AlbumRef, onUpdate: (List<SongRef>) -> Unit) {
+        albumCache[a.key]?.let { onUpdate(it); return }
         val songs = LinkedHashMap<String, SongRef>()
         for (q in listOf("${a.artist} ${a.name}", a.name)) {
             val r = runCatching { search(ctx, q) }.getOrNull() ?: continue
             r.songs.filter { it.artistSlug == a.artistSlug && it.albumSlug == a.slug }.forEach { songs.putIfAbsent(it.id, it) }
+            onUpdate(songs.values.toList())
         }
-        return songs.values.toList()
+        val list = songs.values.toList()
+        if (list.isNotEmpty()) albumCache[a.key] = list
+        onUpdate(list)
     }
 
     /** Downloads and parses one sheet page. Throws with a readable message on failure. */

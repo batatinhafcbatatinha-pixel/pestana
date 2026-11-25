@@ -42,6 +42,12 @@ class Settings(context: Context) {
         private set
     var accent by mutableStateOf(p.getBoolean("accent", true))
         private set
+    /** Index in ChordColors (0 = theme colour). */
+    var chordColor by mutableIntStateOf(p.getInt("chordColor", 0))
+        private set
+    /** Tinted background behind chords. */
+    var chordBox by mutableStateOf(p.getBoolean("chordBox", true))
+        private set
 
 
     fun putTheme(v: String) { theme = v; p.edit().putString("theme", v).apply() }
@@ -58,5 +64,7 @@ class Settings(context: Context) {
     fun putBpm(v: Int) { bpm = v.coerceIn(20, 300); p.edit().putInt("bpm", bpm).apply() }
     fun putBeats(v: Int) { beats = v.coerceIn(1, 12); p.edit().putInt("beats", beats).apply() }
     fun putSubdivision(v: Int) { subdivision = v.coerceIn(1, 4); p.edit().putInt("subdivision", subdivision).apply() }
+    fun putChordColor(v: Int) { chordColor = v; p.edit().putInt("chordColor", v).apply() }
+    fun putChordBox(v: Boolean) { chordBox = v; p.edit().putBoolean("chordBox", v).apply() }
     fun putAccent(v: Boolean) { accent = v; p.edit().putBoolean("accent", v).apply() }
 }

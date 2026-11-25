@@ -35,9 +35,11 @@ data class SongRef(
     }
 }
 
-data class ArtistRef(val slug: String, val name: String)
+data class ArtistRef(val slug: String, val name: String, val img: String = "")
 
-data class AlbumRef(val slug: String, val name: String, val artist: String, val artistSlug: String, val year: String)
+data class AlbumRef(val slug: String, val name: String, val artist: String, val artistSlug: String, val year: String, val img: String = "") {
+    val key get() = "$artistSlug/$slug"
+}
 
 data class SearchResults(
     val artists: List<ArtistRef> = emptyList(),

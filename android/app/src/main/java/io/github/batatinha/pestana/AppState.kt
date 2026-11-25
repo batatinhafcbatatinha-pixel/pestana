@@ -32,6 +32,10 @@ class AppState(context: Context) {
     val db = Db(app)
     val settings = Settings(app)
 
+    init {
+        Images.init(db)
+    }
+
     val stack = mutableStateListOf<Screen>(Screen.Home)
     val current: Screen get() = stack.last()
 

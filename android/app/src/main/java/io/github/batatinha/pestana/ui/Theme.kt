@@ -45,19 +45,19 @@ object Themes {
     val Light = ReadingTheme(
         "light", "Claro", false,
         bg = Color(0xFFFBFAF6), surface = Color(0xFFF1EFE9), surface2 = Color(0xFFE6E3DB),
-        text = Color(0xFF1E1F22), muted = Color(0xFF6B6E75), chord = Color(0xFFB0501A),
+        text = Color(0xFF1E1F22), muted = Color(0xFF6B6E75), chord = Color(0xFFC2410C),
         header = Color(0xFF2F5DA8), tab = Color(0xFF3B6B47), line = Color(0xFFDDD9CF), good = Color(0xFF2E8B57),
     )
     val Sepia = ReadingTheme(
         "sepia", "Sépia (Kindle)", false,
         bg = Color(0xFFF4ECD8), surface = Color(0xFFEADFC6), surface2 = Color(0xFFDDD0B3),
-        text = Color(0xFF3B2F24), muted = Color(0xFF7D6B57), chord = Color(0xFF9A3F12),
+        text = Color(0xFF3B2F24), muted = Color(0xFF7D6B57), chord = Color(0xFFB4320C),
         header = Color(0xFF6B4E2E), tab = Color(0xFF55603A), line = Color(0xFFD6C8A8), good = Color(0xFF4E7D3A),
     )
     val Paper = ReadingTheme(
         "paper", "Papel (E-ink)", false,
         bg = Color(0xFFEDEDEA), surface = Color(0xFFE2E2DE), surface2 = Color(0xFFD5D5D0),
-        text = Color(0xFF111111), muted = Color(0xFF555555), chord = Color(0xFF000000),
+        text = Color(0xFF111111), muted = Color(0xFF555555), chord = Color(0xFFB3261E),
         header = Color(0xFF222222), tab = Color(0xFF333333), line = Color(0xFFC8C8C2), good = Color(0xFF1F6F3F),
     )
     val Night = ReadingTheme(
@@ -87,6 +87,26 @@ object Themes {
         else -> all.firstOrNull { it.id == id } ?: Dark
     }
 }
+
+/** Optional chord colour chosen by the user: (light, dark) pairs. */
+object ChordColors {
+    val all = listOf(
+        "Do tema" to null,
+        "Laranja" to (Color(0xFFC2410C) to Color(0xFFFFA94D)),
+        "Azul" to (Color(0xFF1D4ED8) to Color(0xFF7AB0FF)),
+        "Vermelho" to (Color(0xFFB91C1C) to Color(0xFFFF7A7A)),
+        "Verde" to (Color(0xFF15803D) to Color(0xFF6EE7A0)),
+        "Roxo" to (Color(0xFF7E22CE) to Color(0xFFC9A6FF)),
+    )
+
+    fun apply(t: ReadingTheme, index: Int): ReadingTheme {
+        val pair = all.getOrNull(index)?.second ?: return t
+        return t.copy(chord = if (t.dark) pair.second else pair.first)
+    }
+}
+
+/** Background tint behind each chord so it pops out of the lyric. */
+val ReadingTheme.chordBg get() = chord.copy(alpha = if (dark) 0.17f else 0.12f)
 
 val LocalReading = staticCompositionLocalOf { Themes.Dark }
 

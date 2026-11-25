@@ -147,7 +147,7 @@ fun HomeScreen(state: AppState) {
                 if (results.artists.isNotEmpty()) {
                     item { SectionTitle("Artistas") }
                     items(results.artists, key = { "a" + it.slug }) { a ->
-                        ListRow(a.name, null, leading = { Monogram(a.name) }) { state.go(Screen.Artist(a)) }
+                        ListRow(a.name, null, leading = { Monogram(a.name, url = a.img.ifEmpty { null } ?: io.github.batatinha.pestana.Images.artist(a.slug)) }) { state.go(Screen.Artist(a)) }
                     }
                 }
                 if (results.songs.isNotEmpty()) {
@@ -157,7 +157,7 @@ fun HomeScreen(state: AppState) {
                 if (results.albums.isNotEmpty()) {
                     item { SectionTitle("Álbuns") }
                     items(results.albums, key = { "l" + it.artistSlug + it.slug }) { a ->
-                        ListRow(a.name, listOf(a.artist, a.year).filter { it.isNotBlank() }.joinToString(" · "), leading = { Monogram(a.name, Ic.Album, round = false) }) {
+                        ListRow(a.name, listOf(a.artist, a.year).filter { it.isNotBlank() }.joinToString(" · "), leading = { Monogram(a.name, Ic.Album, round = false, url = a.img.ifEmpty { null } ?: io.github.batatinha.pestana.Images.album(a.key)) }) {
                             state.go(Screen.Album(a))
                         }
                     }
@@ -170,35 +170,53 @@ fun HomeScreen(state: AppState) {
     }
 }
 
+/** Big photo + name header for artist and album pages. */
+@Composable
+private fun Header(title: String, subtitle: String, url: String?, round: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector?) {
+    val t = LocalReading.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Monogram(title, icon, round = round, url = url, size = 96.dp)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = t.text, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            if (subtitle.isNotBlank()) Text(subtitle, color = t.muted, fontSize = 14.sp, maxLines = 1)
+        }
+    }
+}
+
 @Composable
 fun ArtistScreen(state: AppState, artist: ArtistRef) {
     val ctx = LocalContext.current
-    var songs by remember { mutableStateOf<List<SongRef>?>(null) }
-    var albums by remember { mutableStateOf<List<AlbumRef>>(emptyList()) }
+    val cached = remember(artist.slug) { Source.cachedArtist(artist.slug) }
+    var songs by remember { mutableStateOf(cached?.first) }
+    var albums by remember { mutableStateOf(cached?.second ?: emptyList()) }
+    var loading by remember { mutableStateOf(cached == null) }
     var fav by remember(state.dataVersion) { mutableStateOf(state.db.isFav("artist", artist.slug)) }
+    val img = artist.img.ifEmpty { null } ?: io.github.batatinha.pestana.Images.artist(artist.slug)
     LaunchedEffect(artist) {
-        val (s, a) = Source.artistSongs(ctx, artist)
-        songs = s; albums = a
+        // Results appear as each query answers (and instantly when cached).
+        Source.artistSongs(ctx, artist) { s, a -> if (s.isNotEmpty() || songs == null) songs = s; albums = a }
+        loading = false
     }
     Column(Modifier.fillMaxSize()) {
-        TopBar(artist.name, "Artista", onBack = { state.back() }) {
-            FavButton(fav) { fav = state.toggleFavArtist(artist) }
+        TopBar("", null, onBack = { state.back() }) {
+            FavButton(fav) { fav = state.toggleFavArtist(artist.copy(img = img ?: "")) }
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
+            item { Header(artist.name, "Artista", img, round = true, icon = null) }
             val list = songs
-            if (list == null) {
-                item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(20.dp), color = LocalReading.current.chord) }
-            } else {
-                if (list.isEmpty()) item { EmptyState("Sem músicas", "Não encontrei cifras desse artista agora.") }
-                else {
+            if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), color = LocalReading.current.chord, trackColor = LocalReading.current.bg) }
+            if (list != null) {
+                if (list.isEmpty() && !loading) item { EmptyState("Sem músicas", "Não encontrei cifras desse artista agora.") }
+                if (list.isNotEmpty()) {
                     item { SectionTitle("Músicas") }
                     items(list, key = { it.id }) { SongRow(state, it, list) }
                 }
-                if (albums.isNotEmpty()) {
-                    item { SectionTitle("Álbuns") }
-                    items(albums, key = { "l" + it.slug }) { a ->
-                        ListRow(a.name, a.year, leading = { Monogram(a.name, Ic.Album, round = false) }) { state.go(Screen.Album(a)) }
-                    }
+            }
+            if (albums.isNotEmpty()) {
+                item { SectionTitle("Álbuns") }
+                items(albums, key = { "l" + it.slug }) { a ->
+                    ListRow(a.name, a.year, leading = { Monogram(a.name, Ic.Album, round = false, url = a.img.ifEmpty { null } ?: io.github.batatinha.pestana.Images.album(a.key)) }) { state.go(Screen.Album(a)) }
                 }
             }
         }
@@ -208,28 +226,33 @@ fun ArtistScreen(state: AppState, artist: ArtistRef) {
 @Composable
 fun AlbumScreen(state: AppState, album: AlbumRef) {
     val ctx = LocalContext.current
-    var songs by remember { mutableStateOf<List<SongRef>?>(null) }
-    val favId = "${album.artistSlug}/${album.slug}"
+    var songs by remember { mutableStateOf(Source.cachedAlbum(album.key)) }
+    var loading by remember { mutableStateOf(songs == null) }
+    val favId = album.key
     var fav by remember(state.dataVersion) { mutableStateOf(state.db.isFav("album", favId)) }
-    LaunchedEffect(album) { songs = Source.albumSongs(ctx, album) }
+    val img = album.img.ifEmpty { null } ?: io.github.batatinha.pestana.Images.album(album.key)
+    LaunchedEffect(album) {
+        Source.albumSongs(ctx, album) { songs = it }
+        loading = false
+    }
     Column(Modifier.fillMaxSize()) {
-        TopBar(album.name, listOf(album.artist, album.year).filter { it.isNotBlank() }.joinToString(" · "), onBack = { state.back() }) {
+        TopBar("", null, onBack = { state.back() }) {
             FavButton(fav) { fav = state.toggleFavAlbum(album) }
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
-            val list = songs
-            when {
-                list == null -> item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(20.dp), color = LocalReading.current.chord) }
-                list.isEmpty() -> item { EmptyState("Sem músicas", "A busca não trouxe as faixas deste álbum.") }
-                else -> {
-                    item {
-                        Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Pill("Ver cifra da 1ª faixa", false) { state.go(Screen.Song(list.first(), list)) }
-                            Pill("Artista", false) { state.go(Screen.Artist(ArtistRef(album.artistSlug, album.artist))) }
-                        }
+            item { Header(album.name, listOf(album.artist, album.year).filter { it.isNotBlank() }.joinToString(" · "), img, round = false, icon = Ic.Album) }
+            if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), color = LocalReading.current.chord, trackColor = LocalReading.current.bg) }
+            val list = songs.orEmpty()
+            if (list.isEmpty() && !loading) item { EmptyState("Sem músicas", "A busca não trouxe as faixas deste álbum.") }
+            if (list.isNotEmpty()) {
+                item {
+                    Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Pill("Tocar em sequência", false) { state.go(Screen.Song(list.first(), list)) }
+                        Pill("Artista", false) { state.go(Screen.Artist(ArtistRef(album.artistSlug, album.artist))) }
+                        Pill("Baixar offline", false) { state.downloadForOffline(list) }
                     }
-                    items(list, key = { it.id }) { SongRow(state, it, list) }
                 }
+                items(list, key = { it.id }) { SongRow(state, it, list) }
             }
         }
     }

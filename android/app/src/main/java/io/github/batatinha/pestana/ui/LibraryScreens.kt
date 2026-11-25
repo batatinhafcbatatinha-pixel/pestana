@@ -83,7 +83,7 @@ fun LibraryScreen(state: AppState) {
                     val artists = state.db.favs("artist")
                     if (artists.isEmpty()) item { EmptyState("Nenhum artista favorito", "Favorite artistas pela busca.") }
                     items(artists, key = { it.id }) { a ->
-                        ListRow(a.title, null, leading = { Monogram(a.title) }) { state.go(Screen.Artist(ArtistRef(a.id, a.title))) }
+                        ListRow(a.title, null, leading = { Monogram(a.title, url = io.github.batatinha.pestana.Images.artist(a.id)) }) { state.go(Screen.Artist(ArtistRef(a.id, a.title))) }
                     }
                 }
                 2 -> {
@@ -91,7 +91,7 @@ fun LibraryScreen(state: AppState) {
                     if (albums.isEmpty()) item { EmptyState("Nenhum álbum favorito", "Favorite álbuns pela busca ou na página do artista.") }
                     items(albums, key = { it.id }) { a ->
                         val (artistSlug, slug) = a.id.split('/', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
-                        ListRow(a.title, listOf(a.sub, a.extra).filter { it.isNotBlank() }.joinToString(" · "), leading = { Monogram(a.title, Ic.Album, round = false) }) {
+                        ListRow(a.title, listOf(a.sub, a.extra).filter { it.isNotBlank() }.joinToString(" · "), leading = { Monogram(a.title, Ic.Album, round = false, url = io.github.batatinha.pestana.Images.album(a.id)) }) {
                             state.go(Screen.Album(AlbumRef(slug, a.title, a.sub, artistSlug, a.extra)))
                         }
                     }
@@ -170,7 +170,7 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
             if (songs.isEmpty()) item { EmptyState("Playlist vazia", "Abra uma cifra e use ⋯ › Adicionar à playlist.") }
             itemsIndexed(songs, key = { _, s -> s.id }) { i, s ->
                 if (editing) {
-                    ListRow(s.title, s.artist, leading = { Monogram("${i + 1}") }, trailing = {
+                    ListRow(s.title, s.artist, leading = { SongThumb(s) }, trailing = {
                         Row {
                             IconButton(enabled = i > 0, onClick = {
                                 songs = songs.toMutableList().apply { add(i - 1, removeAt(i)) }
@@ -184,7 +184,7 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
                         }
                     }) {}
                 } else {
-                    ListRow(s.title, s.artist, leading = { Monogram("${i + 1}") }) { state.go(Screen.Song(s, songs)) }
+                    ListRow(s.title, s.artist, leading = { SongThumb(s) }) { state.go(Screen.Song(s, songs)) }
                 }
             }
         }

@@ -251,7 +251,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
-    val annotated = remember(rendered, t, settings.fontSize) {
+    val annotated = remember(rendered, t, settings.fontSize, settings.chordBox) {
         val r = rendered ?: return@remember AnnotatedString("")
         buildAnnotatedString {
             r.lines.forEachIndexed { i, line ->
@@ -260,7 +260,12 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                         Style.CHORD -> withLink(
                             LinkAnnotation.Clickable(
                                 sp.text,
-                                TextLinkStyles(SpanStyle(color = t.chord, fontWeight = FontWeight.Bold)),
+                                TextLinkStyles(
+                                    SpanStyle(
+                                        color = t.chord, fontWeight = FontWeight.ExtraBold,
+                                        background = if (settings.chordBox) t.chordBg else androidx.compose.ui.graphics.Color.Unspecified,
+                                    ),
+                                ),
                             ) { chordPopup = sp.text },
                         ) { append(sp.text) }
                         Style.HEADER -> withStyle(SpanStyle(color = t.header, fontWeight = FontWeight.SemiBold)) { append(sp.text) }
@@ -501,6 +506,10 @@ private fun Controls(
                 Panel.TEXT -> Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                     Stepper("Tamanho", "${s.fontSize.toInt()}", { s.putFontSize(s.fontSize - 1) }, { s.putFontSize(s.fontSize + 1) })
                     Stepper("Espaçamento", "%.2f".format(s.lineSpacing), { s.putLineSpacing(s.lineSpacing - 0.05f) }, { s.putLineSpacing(s.lineSpacing + 0.05f) })
+                    ToggleRow("Fundo destacado nos acordes", s.chordBox) { s.putChordBox(it) }
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ChordColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.chordColor == i) { s.putChordColor(i) } }
+                    }
                     Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Pill("Sistema", s.theme == "auto") { s.putTheme("auto") }
                         Themes.all.forEach { th -> Pill(th.name, s.theme == th.id) { s.putTheme(th.id) } }
@@ -528,13 +537,21 @@ private fun Controls(
                     Modifier.size(44.dp).clip(CircleShape).background(t.chord).clickable(onClick = onAuto),
                     contentAlignment = Alignment.Center,
                 ) { Icon(if (auto) Ic.Pause else Ic.Play, if (auto) "Pausar rolagem" else "Rolagem automática", tint = t.bg) }
-                IconButton(onClick = { onPrefs(prefs.copy(speed = (prefs.speed - 1).coerceAtLeast(1))) }) { Icon(Ic.Minus, "Mais devagar", tint = t.text) }
-                Column(Modifier.widthIn(min = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("${prefs.speed}", color = t.text, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("veloc.", color = t.muted, fontSize = 10.sp)
-                }
-                IconButton(onClick = { onPrefs(prefs.copy(speed = (prefs.speed + 1).coerceAtMost(40))) }) { Icon(Ic.Plus, "Mais rápido", tint = t.text) }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                androidx.compose.material3.Slider(
+                    value = prefs.speed.toFloat(),
+                    onValueChange = { onPrefs(prefs.copy(speed = it.toInt().coerceIn(1, 40))) },
+                    valueRange = 1f..40f,
+                    modifier = Modifier.weight(1f),
+                    colors = androidx.compose.material3.SliderDefaults.colors(
+                        thumbColor = t.chord, activeTrackColor = t.chord, inactiveTrackColor = t.surface2,
+                    ),
+                )
+                Text(
+                    "${prefs.speed}", color = t.text, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                    modifier = Modifier.widthIn(min = 26.dp).padding(start = 4.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
                 BarButton(r?.key?.ifEmpty { "Tom" } ?: "Tom", panel == Panel.KEY) { onPanel(Panel.KEY) }
                 IconButton(onClick = { onPanel(Panel.TEXT) }) { Icon(Ic.Text, "Texto e tema", tint = if (panel == Panel.TEXT) t.chord else t.text) }
                 IconButton(onClick = { onPanel(Panel.MORE) }) { Icon(Ic.More, "Mais opções", tint = if (panel == Panel.MORE) t.chord else t.text) }

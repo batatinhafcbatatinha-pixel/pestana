@@ -174,20 +174,45 @@ fun SectionTitle(text: String, modifier: Modifier = Modifier) {
     )
 }
 
-/** Round avatar with the first letter, instead of downloading pictures. */
+/**
+ * Photo (artist or album cover) with a letter/icon placeholder underneath, so
+ * rows never jump while the picture loads. Pictures are cached in memory only.
+ */
 @Composable
-fun Monogram(text: String, icon: ImageVector? = null, round: Boolean = true) {
+fun Monogram(
+    text: String,
+    icon: ImageVector? = null,
+    round: Boolean = true,
+    url: String? = null,
+    size: androidx.compose.ui.unit.Dp = 42.dp,
+) {
     val t = LocalReading.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val px = with(androidx.compose.ui.platform.LocalDensity.current) { size.roundToPx() }
     Box(
-        Modifier.size(42.dp).clip(if (round) CircleShape else RoundedCornerShape(10.dp)).background(t.surface2),
+        Modifier.size(size).clip(if (round) CircleShape else RoundedCornerShape(if (size > 60.dp) 16.dp else 10.dp)).background(t.surface2),
         contentAlignment = Alignment.Center,
     ) {
         if (icon != null) {
-            Icon(icon, null, Modifier.size(20.dp), tint = t.muted)
+            Icon(icon, null, Modifier.size(size * 0.48f), tint = t.muted)
         } else {
-            Text(text.trim().take(1).uppercase(), color = t.chord, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            Text(text.trim().take(1).uppercase(), color = t.chord, fontWeight = FontWeight.Bold, fontSize = (size.value * 0.4f).sp)
+        }
+        if (!url.isNullOrEmpty()) {
+            // Request only the size drawn, so memory stays small.
+            val req = remember(url, px) { coil.request.ImageRequest.Builder(ctx).data(url).size(px).build() }
+            coil.compose.AsyncImage(req, null, Modifier.matchParentSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
         }
     }
+}
+
+/** Artist photo for a song row; looks it up once if the search never saw this artist. */
+@Composable
+fun SongThumb(s: SongRef, size: androidx.compose.ui.unit.Dp = 42.dp) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val url = io.github.batatinha.pestana.Images.artist(s.artistSlug)
+    if (url == null && !s.isLocal) LaunchedEffect(s.artistSlug) { io.github.batatinha.pestana.Images.ensureArtist(ctx, s.artistSlug) }
+    Monogram(s.title, Ic.Note, round = false, url = url, size = size)
 }
 
 @Composable
@@ -221,7 +246,7 @@ fun ListRow(
 fun SongRow(state: AppState, s: SongRef, queue: List<SongRef> = emptyList(), trailing: @Composable (() -> Unit)? = null) {
     ListRow(
         s.title, s.artist,
-        leading = { Monogram(s.title, Ic.Note, round = false) },
+        leading = { SongThumb(s) },
         trailing = trailing,
     ) { state.go(Screen.Song(s, queue)) }
 }
