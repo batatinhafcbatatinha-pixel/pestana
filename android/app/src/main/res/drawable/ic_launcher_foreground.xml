@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- frets -->
+    <path android:strokeColor="#E6E3DC" android:strokeAlpha="0.28" android:strokeWidth="1.6"
+        android:pathData="M36,33 L36,75 M72,33 L72,75" />
+    <!-- six strings, thicker at the bottom -->
+    <path android:strokeColor="#E6E3DC" android:strokeAlpha="0.9" android:strokeWidth="1.1" android:strokeLineCap="round"
+        android:pathData="M28,37 L80,37 M28,44 L80,44" />
+    <path android:strokeColor="#E6E3DC" android:strokeAlpha="0.9" android:strokeWidth="1.5" android:strokeLineCap="round"
+        android:pathData="M28,51 L80,51 M28,58 L80,58" />
+    <path android:strokeColor="#E6E3DC" android:strokeAlpha="0.9" android:strokeWidth="2" android:strokeLineCap="round"
+        android:pathData="M28,65 L80,65 M28,72 L80,72" />
+    <!-- the barre -->
+    <path android:fillColor="#F5B556"
+        android:pathData="M49,31 L59,31 A5,5 0 0 1 64,36 L64,73 A5,5 0 0 1 59,78 L49,78 A5,5 0 0 1 44,73 L44,36 A5,5 0 0 1 49,31 Z" />
+</vector>
