@@ -59,6 +59,22 @@ enum TabKind {
     Riff,
 }
 
+/// A line drawn over tablature and wrapped with it, column for column.
+#[derive(Debug, Clone)]
+enum Overlay {
+    Text(String),
+    Chords(Vec<Seg>),
+}
+
+/// Tablature rows plus what is glued to them: chord names and remarks above
+/// ("then bend on the 15th fret"), and marks below ("pm . . .", "let ring").
+#[derive(Debug, Clone, Default)]
+struct TabBlock {
+    above: Vec<Overlay>,
+    rows: Vec<String>,
+    below: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 enum Item {
     Blank,
@@ -66,7 +82,7 @@ enum Item {
     Header(String),
     /// Chord line, optionally with the lyric line under it.
     Chords(Vec<Seg>, Option<String>),
-    Tab(Vec<String>, TabKind),
+    Tab(TabBlock, TabKind),
     /// Text that only makes sense next to tablature ("Parte 1 de 4").
     TabNote(String),
 }
@@ -105,7 +121,8 @@ fn normalize(text: &str) -> Vec<String> {
                         out.extend(std::iter::repeat(' ').take(n));
                     }
                     // Odd spaces become plain spaces.
-                    '\u{a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => out.push(' '),
+                    '\u{a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{2800}' | '\u{3164}'
+                    | '\u{ffa0}' | '\u{115f}' | '\u{1160}' => out.push(' '),
                     // Invisible characters some sites sprinkle in the text (zero-width
                     // spaces, joiners, direction marks, soft hyphens, BOM): drop them,
                     // or "Am" stops looking like a chord.
@@ -116,7 +133,11 @@ fn normalize(text: &str) -> Vec<String> {
                     | '\u{feff}'
                     | '\u{ad}'
                     | '\u{34f}'
-                    | '\u{180e}'
+                    | '\u{180b}'..='\u{180e}'
+                    | '\u{17b4}'
+                    | '\u{17b5}'
+                    | '\u{fe00}'..='\u{fe0f}'
+                    | '\u{e0000}'..='\u{e007f}'
                     | '\u{61c}' => {}
                     c if c.is_control() => {}
                     c => out.push(c),
@@ -296,6 +317,21 @@ fn is_tab_note(line: &str) -> bool {
     l.starts_with("tab -") || l.starts_with("tablatura")
 }
 
+/// A remark line printed under tablature (palm mute dots, "let ring"...).
+fn is_tab_mark(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() || t.chars().count() > 80 || is_tab_line(line) || split_header(line).is_some() {
+        return false;
+    }
+    let low = t.to_lowercase();
+    if ["pm", "p.m", "let ring", "l.r", "harm", "vib"].iter().any(|w| low.starts_with(w)) {
+        return true;
+    }
+    let visible = t.chars().filter(|c| !c.is_whitespace()).count().max(1);
+    let letters = t.chars().filter(|c| c.is_alphabetic()).count();
+    letters * 2 <= visible
+}
+
 fn classify(lines: &[String]) -> Vec<Item> {
     let mut items = Vec::new();
     let mut section = String::new();
@@ -309,9 +345,28 @@ fn classify(lines: &[String]) -> Vec<Item> {
         }
         if is_tab_line(line) {
             let kind = if section.contains("solo") { TabKind::Solo } else { TabKind::Riff };
-            let mut block = Vec::new();
+            let mut block = TabBlock::default();
             while i < lines.len() && is_tab_line(&lines[i]) {
-                block.push(lines[i].clone());
+                block.rows.push(lines[i].clone());
+                i += 1;
+            }
+            // Lines glued on top (no blank line between) belong to the drawing.
+            while block.above.len() < 3 {
+                match items.last() {
+                    Some(Item::Text(t)) => {
+                        block.above.insert(0, Overlay::Text(t.clone()));
+                        items.pop();
+                    }
+                    Some(Item::Chords(segs, None)) if !segs.first().is_some_and(|s| s.style == ST_HEADER) => {
+                        block.above.insert(0, Overlay::Chords(segs.clone()));
+                        items.pop();
+                    }
+                    _ => break,
+                }
+            }
+            // Marks glued underneath: "pm . . .", "let ring", "x x", "~~~".
+            while i < lines.len() && block.below.len() < 3 && is_tab_mark(&lines[i]) {
+                block.below.push(lines[i].clone());
                 i += 1;
             }
             items.push(Item::Tab(block, kind));
@@ -345,7 +400,11 @@ fn classify(lines: &[String]) -> Vec<Item> {
             // A lone ambiguous word ("E", "A", "Em") between lyric lines is lyric.
             let only_ambiguous = segs.len() == 1 && crate::chord::ambiguous_word(&segs[0].text);
             let prev_text = i > 0 && matches!(items.last(), Some(Item::Text(_)));
-            if !(only_ambiguous && prev_text) {
+            // "A" or "E" alone is a word only inside prose; over a lyric line it is a chord.
+            let next_is_lyric = lines.get(i + 1).is_some_and(|n| {
+                !n.trim().is_empty() && !is_tab_line(n) && chord_segments(n, 0).is_none() && split_header(n).is_none()
+            });
+            if !(only_ambiguous && prev_text && !next_is_lyric) {
                 let next = lines.get(i + 1);
                 let lyric = next.filter(|n| {
                     !n.trim().is_empty() && !is_tab_line(n) && chord_segments(n, 0).is_none() && split_header(n).is_none()
@@ -673,21 +732,47 @@ fn wrap_pair(segs: &[Seg], lyric: Option<&str>, cols: usize, out: &mut Out) {
     }
 }
 
+/// Length of a tab line's string name part: "e|", "D#|", "4 ", " |" ...
+fn tab_prefix(cs: &[char]) -> usize {
+    let lead = cs.iter().take_while(|c| **c == ' ').count();
+    let at = |i: usize| cs.get(i).copied().unwrap_or('\0');
+    if matches!(at(lead), '|' | ':') {
+        return lead + 1;
+    }
+    let c = at(lead);
+    let letter = "EADGBeadgbCFcf".contains(c) && c != '\0';
+    let digit = ('1'..='8').contains(&c);
+    if !(letter || digit) {
+        return lead;
+    }
+    let mut i = lead + 1;
+    if letter && (at(i) == '#' || at(i) == 'b') && matches!(at(i + 1), '|' | ':' | ' ' | '-') {
+        i += 1;
+    }
+    let spaced = at(i) == ' ';
+    if spaced {
+        i += 1;
+    }
+    match at(i) {
+        '|' | ':' => i + 1,
+        // "4 ------" (string number) or "E ------": the name ends before the line.
+        '-' if spaced || letter => i,
+        _ => lead,
+    }
+}
+
 /// Splits a tab line so fret numbers stand out from the string lines:
-/// "e|--3h5--|" -> [("e|--", TAB), ("3h5", TAB_NOTE), ("--|", TAB)].
+/// "e|--3h5--|" -> [("e|--", TAB), ("3", TAB_NOTE), ("h", TAB_TECH), ...].
+#[cfg(test)]
 fn tab_spans(line: &str) -> Vec<(u8, String)> {
     let cs: Vec<char> = line.chars().collect();
-    // The string name ("e|", "D#|", "A ") is part of the drawing, not a note.
-    let lead = cs.iter().take_while(|c| **c == ' ').count();
-    let prefix = match cs.iter().skip(lead).position(|c| *c == '|' || *c == ':') {
-        Some(p) if p <= 3 => lead + p + 1,
-        _ => lead,
-    };
+    // The string name ("e|", "D#|", "4 ") is part of the drawing, not a note.
+    let prefix = tab_prefix(&cs);
+    body_spans(&cs, prefix)
+}
+
+fn body_spans(cs: &[char], prefix: usize) -> Vec<(u8, String)> {
     let mut out: Vec<(u8, String)> = Vec::new();
-    let push = |style: u8, c: char, out: &mut Vec<(u8, String)>| match out.last_mut() {
-        Some((st, text)) if *st == style => text.push(c),
-        _ => out.push((style, c.to_string())),
-    };
     for (i, c) in cs.iter().enumerate() {
         let style = if i < prefix || matches!(c, '-' | '|' | ':' | ' ' | '=') {
             ST_TAB
@@ -697,64 +782,160 @@ fn tab_spans(line: &str) -> Vec<(u8, String)> {
             // h p b r / \ ~ x ( ) ^ v t s . * : hammer-on, pull-off, bend, slide...
             ST_TAB_TECH
         };
-        push(style, *c, &mut out);
+        match out.last_mut() {
+            Some((st, text)) if *st == style => text.push(*c),
+            _ => out.push((style, c.to_string())),
+        }
     }
     out
 }
 
-fn wrap_tab(block: &[String], cols: usize, out: &mut Out) {
-    let rows: Vec<Vec<char>> = block.iter().map(|l| chars(l)).collect();
-    let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+/// Wraps a tab block to `cols`. Every row, and the lines drawn over and under
+/// it, is cut at the same columns; cuts prefer bar lines, never split a fret
+/// number or a chord name, chunks come out about the same size, and chunks
+/// with nothing to play are dropped.
+fn wrap_tab(block: &TabBlock, cols: usize, fmt: &dyn Fn(&Chord) -> String, out: &mut Out) {
+    let rows: Vec<Vec<char>> = block.rows.iter().map(|l| chars(l)).collect();
+    let above: Vec<Overlay> = block
+        .above
+        .iter()
+        .map(|o| match o {
+            Overlay::Chords(segs) => Overlay::Chords(relayout(segs, fmt)),
+            t => t.clone(),
+        })
+        .collect();
+    let below: Vec<Vec<char>> = block.below.iter().map(|l| chars(l)).collect();
+    let over_width = |o: &Overlay| match o {
+        Overlay::Text(t) => t.chars().count(),
+        Overlay::Chords(segs) => segs.last().map(|s| s.col + s.text.chars().count()).unwrap_or(0),
+    };
+    let width = rows
+        .iter()
+        .chain(below.iter())
+        .map(|r| r.len())
+        .chain(above.iter().map(over_width))
+        .max()
+        .unwrap_or(0);
+
+    let emit_over = |o: &Overlay, from: usize, to: usize, pad: usize, out: &mut Out| match o {
+        Overlay::Text(t) => {
+            let s: String = t.chars().skip(from).take(to.saturating_sub(from)).collect();
+            if !s.trim().is_empty() {
+                out.push(K_NOTE, vec![(ST_NOTE, format!("{}{}", " ".repeat(pad), s.trim_end()))]);
+            }
+        }
+        Overlay::Chords(segs) => {
+            let mut spans = seg_line(segs, from, to);
+            if spans.iter().any(|(st, _)| *st == ST_CHORD) {
+                if pad > 0 {
+                    spans.insert(0, (ST_LYRIC, " ".repeat(pad)));
+                }
+                out.push(K_CHORDS, spans);
+            }
+        }
+    };
+    let emit_below = |b: &Vec<char>, from: usize, to: usize, pad: usize, out: &mut Out| {
+        let s: String = b.iter().skip(from).take(to.saturating_sub(from)).collect();
+        if !s.trim().is_empty() {
+            out.push(K_NOTE, vec![(ST_NOTE, format!("{}{}", " ".repeat(pad), s.trim_end()))]);
+        }
+    };
+
     if width <= cols {
+        for o in &above {
+            emit_over(o, 0, usize::MAX, 0, out);
+        }
         for r in &rows {
-            out.push(K_TAB, tab_spans(&r.iter().collect::<String>()));
+            out.push(K_TAB, body_spans(r, tab_prefix(r)));
+        }
+        for b in &below {
+            emit_below(b, 0, usize::MAX, 0, out);
         }
         return;
     }
-    // Prefix = string name up to and including the first bar, e.g. "e|".
-    let prefix: Vec<Vec<char>> = rows
-        .iter()
-        .map(|r| {
-            let lead: usize = r.iter().take_while(|c| **c == ' ').count();
-            match r.iter().skip(lead).position(|c| *c == '|') {
-                Some(p) if p <= 3 => r[..lead + p + 1].to_vec(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
-    let plen = prefix.iter().map(|p| p.len()).max().unwrap_or(0);
+
+    let prefixes: Vec<usize> = rows.iter().map(|r| tab_prefix(r)).collect();
+    let plen = prefixes.iter().copied().max().unwrap_or(0);
     let body_w = cols.saturating_sub(plen).max(8);
-    let safe = |c: usize| {
-        rows.iter().zip(prefix.iter()).all(|(r, p)| {
-            let i = p.len().max(plen.min(r.len())) + c;
-            i >= r.len() || matches!(r[i], '-' | '|' | ' ')
+    let body_len = width.saturating_sub(plen);
+    let col = |r: &Vec<char>, c: usize| r.get(plen + c).copied().unwrap_or(' ');
+    // A cut at body column c falls between columns c-1 and c.
+    let in_chord = |c: usize| {
+        above.iter().any(|o| match o {
+            Overlay::Chords(segs) => segs.iter().any(|s| s.col < plen + c && plen + c < s.col + s.text.chars().count()),
+            Overlay::Text(_) => false,
         })
     };
-    let body_len = width - plen;
+    let safe = |c: usize| {
+        !in_chord(c)
+            && rows.iter().all(|r| {
+                let (a, b) = (col(r, c.saturating_sub(1)), col(r, c));
+                // Never inside a number like "12" or a run like "5h7".
+                !(a.is_ascii_alphanumeric() && b.is_ascii_alphanumeric()) && matches!(b, '-' | '|' | ' ' | '=')
+            })
+    };
+    let bar = |c: usize| c > 0 && rows.iter().all(|r| col(r, c - 1) == '|');
+    // Remarks over the tab should break between words when possible.
+    let text_rows: Vec<Vec<char>> = above.iter().filter_map(|o| if let Overlay::Text(t) = o { Some(chars(t)) } else { None }).collect();
+    let splits_word = |c: usize| {
+        text_rows.iter().any(|t| {
+            let (a, b) = (t.get(plen + c.saturating_sub(1)).copied().unwrap_or(' '), t.get(plen + c).copied().unwrap_or(' '));
+            c > 0 && a != ' ' && b != ' '
+        })
+    };
+    let has_notes = |from: usize, to: usize| rows.iter().any(|r| (from..to).any(|c| !matches!(col(r, c), '-' | '|' | ' ' | '=' | ':')));
+
+    // Balanced cuts: as many chunks as needed, about the same width each.
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
     let mut start = 0;
     while start < body_len {
-        let mut end = (start + body_w).min(body_len);
-        if end < body_len {
-            let mut e = end;
-            while e > start + body_w / 2 && !safe(e) {
-                e -= 1;
+        let remaining = body_len - start;
+        if remaining <= body_w {
+            cuts.push((start, body_len));
+            break;
+        }
+        let chunks_left = remaining.div_ceil(body_w);
+        let target = start + remaining.div_ceil(chunks_left);
+        let lo = start + body_w / 3;
+        let hi = start + body_w;
+        let mut best: Option<(usize, usize)> = None; // (score, column)
+        for c in lo..=hi {
+            if !safe(c) {
+                continue;
             }
-            if safe(e) {
-                end = e;
+            let score = c.abs_diff(target) * 2 + if bar(c) { 0 } else { 6 } + if splits_word(c) { 40 } else { 0 };
+            if best.is_none_or(|b| score < b.0) {
+                best = Some((score, c));
             }
         }
-        for (r, p) in rows.iter().zip(prefix.iter()) {
-            let off = if p.is_empty() { 0 } else { plen };
-            let s: String = p.iter().collect::<String>()
-                + &" ".repeat(plen - p.len().min(plen))
-                + &r.iter().skip(off + start).take(end - start).collect::<String>();
-            let s = if p.is_empty() { r.iter().skip(start).take(end - start).collect::<String>() } else { s };
-            out.push(K_TAB, tab_spans(&s));
-        }
+        let end = best.map(|b| b.1).unwrap_or(hi);
+        cuts.push((start, end));
         start = end;
-        if start < body_len {
+    }
+
+    let mut first = true;
+    for (start, end) in cuts {
+        // Nothing to play here (a leftover "|" or a few dashes): skip it.
+        if !first && !has_notes(start, end) {
+            continue;
+        }
+        if !first {
             out.push(K_BLANK, vec![]);
         }
+        let (from, pad) = if first { (0, 0) } else { (plen + start, plen) };
+        for o in &above {
+            emit_over(o, from, plen + end, pad, out);
+        }
+        for (r, p) in rows.iter().zip(prefixes.iter()) {
+            let mut line: Vec<char> = r[..(*p).min(r.len())].to_vec();
+            line.extend(std::iter::repeat(' ').take(plen - (*p).min(plen)));
+            line.extend(r.iter().skip(plen + start).take(end - start));
+            out.push(K_TAB, body_spans(&line, *p));
+        }
+        for b in &below {
+            emit_below(b, from, plen + end, pad, out);
+        }
+        first = false;
     }
 }
 
@@ -812,7 +993,12 @@ pub fn render(text: &str, key_hint: &str, opts: Options) -> Rendered {
     // Unique chords across the whole sheet, in order.
     let mut used: Vec<String> = Vec::new();
     for it in &items {
-        if let Item::Chords(segs, _) = it {
+        let segs_list: Vec<&Vec<Seg>> = match it {
+            Item::Chords(segs, _) => vec![segs],
+            Item::Tab(b, _) => b.above.iter().filter_map(|o| if let Overlay::Chords(s) = o { Some(s) } else { None }).collect(),
+            _ => vec![],
+        };
+        for segs in segs_list {
             for s in segs {
                 if let Some(c) = &s.chord {
                     let n = fmt(c);
@@ -845,7 +1031,7 @@ pub fn render(text: &str, key_hint: &str, opts: Options) -> Rendered {
                 let segs = relayout(segs, &fmt);
                 wrap_pair(&segs, lyric.as_deref(), cols, &mut out);
             }
-            Item::Tab(block, _) => wrap_tab(block, cols, &mut out),
+            Item::Tab(block, _) => wrap_tab(block, cols, &fmt, &mut out),
         }
     }
 
@@ -916,7 +1102,7 @@ C            G
     fn classifies() {
         let items = classify(&normalize(SONG));
         assert!(matches!(&items[0], Item::Chords(s, None) if s[0].style == ST_HEADER && s.len() == 5));
-        assert!(items.iter().any(|i| matches!(i, Item::Tab(b, TabKind::Solo) if b.len() == 6)));
+        assert!(items.iter().any(|i| matches!(i, Item::Tab(b, TabKind::Solo) if b.rows.len() == 6)));
         assert!(items.iter().any(|i| matches!(i, Item::Chords(_, Some(l)) if l.contains("Quando"))));
         assert!(items.iter().any(|i| matches!(i, Item::TabNote(_))));
     }
@@ -976,12 +1162,13 @@ C            G
 
     #[test]
     fn wraps_tab_blocks_together() {
-        let block: Vec<String> = ["e|--1--2--3--4--5--6--7--8--9--10--11--12--|", "B|--1--2--3--4--5--6--7--8--9--10--11--12--|"]
+        let rows: Vec<String> = ["e|--1--2--3--4--5--6--7--8--9--10--11--12--|", "B|--1--2--3--4--5--6--7--8--9--10--11--12--|"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let block = TabBlock { rows, ..Default::default() };
         let mut out = Out { lines: Vec::new() };
-        wrap_tab(&block, 20, &mut out);
+        wrap_tab(&block, 20, &|c: &Chord| c.name(false), &mut out);
         let text: Vec<String> = out.lines.iter().map(|(_, s)| s.iter().map(|(_, t)| t.as_str()).collect()).collect();
         assert!(text.iter().all(|l| l.chars().count() <= 20), "{text:?}");
         assert!(text[0].starts_with("e|") && text[1].starts_with("B|"));
@@ -995,6 +1182,71 @@ C            G
         assert!(chord_segments("C  G  (2x)", 0).is_some());
         assert!(chord_segments("| C | G | Am F |", 0).is_some());
         assert!(chord_segments("(C  G)", 0).is_some());
+    }
+
+    #[test]
+    fn lone_a_and_e_over_lyrics_are_chords() {
+        // Lyric continued on its own line, then "A" and "E" alone over lyrics.
+        let text = "F#7\n    The pink champagne on ice, and she\nsaid\nA\n  We are all just prisoners here\nE\n  Of our own device\nG\n  And in the master's chambers\n";
+        let r = render(text, "", Default::default());
+        for c in ["A", "E", "G"] {
+            assert!(r.json.contains(&format!("[2,1,\"{c}\"]")), "{c} should be a chord: {}", r.json);
+        }
+        // Prose stays prose: "E" alone between lyric lines with nothing under it.
+        let prose = "Eu fui embora\nE\n\nVoltei\n";
+        let r = render(prose, "", Default::default());
+        assert!(!r.json.contains("[1,1,\"E\"]") && !r.json.contains("[2,1,\"E\"]"), "{}", r.json);
+    }
+
+    // Turn It Again (RHCP): a remark glued above a long tab block.
+    const TURN_IT_AGAIN: &str = r#"then                                    bend on the 15th fret twice here
+e|---------------------------------------------------------------------------|
+B|-15-----18--15--15------15--15-----15--15-18-------18------15----|---------|
+G|-------------------17b--------17b----------------17b------17------17-------|
+D|---------------------------------------------------------------------------|
+A|---------------------------------------------------------------------------|
+E|---------------------------------------------------------------------------||
+"#;
+
+    #[test]
+    fn tab_wrap_keeps_remark_aligned_and_no_scraps() {
+        let r = render(TURN_IT_AGAIN, "", Options { cols: 40, ..Default::default() });
+        let l = plain_lines(&r.json);
+        let joined = l.join("\n");
+        assert!(l.iter().all(|x| x.chars().count() <= 40), "{joined}");
+        // The remark stays whole words, aligned over the tab, not "th" / "e 15th".
+        assert!(!l.iter().any(|x| x.trim() == "th"), "{joined}");
+        assert!(joined.contains("bend on the 15th"), "{joined}");
+        // Every chunk has at least one note: no "e|-" or "E||" scraps.
+        for chunk in joined.split("\n\n") {
+            assert!(chunk.chars().any(|c| c.is_ascii_digit()), "empty chunk:\n{chunk}\n---\n{joined}");
+        }
+        // Fret numbers are never split ("1" + "5").
+        for line in &l {
+            assert!(!line.ends_with("-1") && !line.ends_with("|1"), "{joined}");
+        }
+    }
+
+    #[test]
+    fn tab_string_numbers_are_not_notes() {
+        let spans = tab_spans("4 ------|-----------------------------|----");
+        assert_eq!(spans[0], (ST_TAB, "4 ------|-----------------------------|----".to_string()));
+        let spans = tab_spans("  ----3-|/5----5/8");
+        assert!(spans.iter().any(|s| s.0 == ST_TAB_NOTE && s.1 == "3"));
+    }
+
+    #[test]
+    fn chords_above_tab_wrap_with_it() {
+        let text = "      Bm                    F#7\nE|-------------2---------------2-------------------------------------------|\nB|---------3-----3-----------2-------------------------------------------------||\n";
+        let r = render(text, "", Options { cols: 40, ..Default::default() });
+        let l = plain_lines(&r.json);
+        let joined = l.join("\n");
+        // Each chord stays over its own notes, in the chunk where they land.
+        assert!(l[0].contains("Bm"), "{joined}");
+        let f = l.iter().position(|x| x.contains("F#7")).unwrap();
+        assert!(l[f + 1].starts_with("E|") && l[f + 1].contains('2'), "{joined}");
+        assert!(r.json.contains("[1,\"Bm\"") || r.json.contains(",1,\"Bm\""), "chords keep chord style: {}", r.json);
+        assert!(!joined.contains("E||") && !joined.contains("B||"), "{joined}");
     }
 
     #[test]

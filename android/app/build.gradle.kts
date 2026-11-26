@@ -12,8 +12,8 @@ android {
         applicationId = "io.github.batatinha.pestana"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.3.1"
         // Only Portuguese and English strings; drops other locales from libraries.
         androidResources.localeFilters += listOf("pt", "en")
     }
