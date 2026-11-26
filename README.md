@@ -1,6 +1,6 @@
 # Pestana
 
-Cifras para violão e guitarra, afinador e metrônomo num app Android nativo, leve e sem conta.
+Cifras, afinador e metrônomo num app Android nativo, leve e sem conta.
 
 - **Rápido e pequeno:** Kotlin + Jetpack Compose, com um núcleo em Rust (via JNI) para o que precisa de velocidade e precisão. O APK release tem cerca de 1,6 MB.
 - **Tudo local:** favoritos (músicas, artistas e álbuns), playlists, histórico e ajustes por música ficam num SQLite no aparelho. Não existe conta nem servidor.
@@ -21,7 +21,7 @@ Cifras para violão e guitarra, afinador e metrônomo num app Android nativo, le
 
 - Usa o **McLeod Pitch Method** (NSDF com interpolação parabólica) em Rust, sobre a entrada de áudio *UNPROCESSED* quando o aparelho suporta (sem redução de ruído nem ganho automático), e um filtro mediano que descarta saltos de oitava. Nos testes com sinal sintético, o erro fica abaixo de 0,5 cent de 31 Hz a 988 Hz.
 - **Modos:** automático (cromático), que mostra a nota que você toca, ou por corda (você escolhe a corda ou deixa o app detectar).
-- **23 afinações:** violão/guitarra (padrão, meio tom e um tom abaixo, Drop D/C#/C/B, DADGAD, Open G/D/E/A/C, 7 cordas), baixo de 4 e 5 cordas, ukulele, cavaquinho e viola caipira.
+- **23 afinações:** baixo/violão/guitarra (padrão, meio tom e um tom abaixo, Drop D/C#/C/B, DADGAD, Open G/D/E/A/C, 7 cordas), baixo de 4 e 5 cordas, ukulele, cavaquinho e viola caipira.
 - Referência A4 ajustável entre 415 e 466 Hz.
 
 ## Metrônomo
