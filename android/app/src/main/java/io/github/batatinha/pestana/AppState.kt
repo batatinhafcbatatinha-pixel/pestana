@@ -59,6 +59,9 @@ class AppState(context: Context) {
             toast = "Já estou baixando outras cifras"
             return
         }
+        // The visible download takes over from the quiet one.
+        saveJob?.cancel()
+        saving.clear()
         val todo = songs.filter { !it.isLocal && !db.hasSheet(it.url) }
         if (todo.isEmpty()) {
             toast = "Tudo já está salvo para usar offline"
@@ -83,6 +86,40 @@ class AppState(context: Context) {
 
     fun changed() {
         dataVersion++
+        syncSaved()
+    }
+
+    private val saving = ArrayDeque<SongRef>()
+    private var saveJob: Job? = null
+    private val saveFailed = HashSet<String>()
+
+    /**
+     * Keeps the phone's copy of the sheets in line with the library: drops the
+     * ones nothing refers to any more and quietly downloads the ones missing
+     * for favorites, playlists and favorite albums.
+     */
+    fun syncSaved() {
+        db.pruneCache()
+        db.keptSongs()
+            .filter { s -> !s.isLocal && s.id !in saveFailed && saving.none { it.id == s.id } && !db.hasSheet(s.url) }
+            .forEach { saving.addLast(it) }
+        if (saving.isEmpty() || saveJob?.isActive == true || downloadJob?.isActive == true) return
+        saveJob = scope.launch {
+            while (true) {
+                val s = saving.removeFirstOrNull() ?: break
+                if (db.hasSheet(s.url)) continue
+                runCatching { Source.fetchSheet(app, s.url, s.id, s.title, s.artist) }
+                    .onSuccess { sheet ->
+                        db.saveSheet(sheet)
+                        db.updateSongMeta(s.id, sheet.title, sheet.artist)
+                    }
+                    // Not retried until the app starts again (page gone, no connection).
+                    .onFailure { saveFailed += s.id }
+            }
+            // Whatever stopped being wanted while this ran goes away.
+            db.pruneCache()
+            dataVersion++
+        }
     }
 
     fun go(s: Screen) {
@@ -132,6 +169,15 @@ class AppState(context: Context) {
         val on = !db.isFav("album", id)
         db.setFav("album", id, a.name, a.artist, a.year, on)
         changed()
+        // A favorite album keeps all its tracks on the phone.
+        if (on) scope.launch {
+            var songs = Source.cachedAlbum(a.key).orEmpty()
+            if (songs.isEmpty()) Source.albumSongs(app, a) { songs = it }
+            if (songs.isNotEmpty() && db.isFav("album", id)) {
+                db.setAlbumSongs(id, songs)
+                changed()
+            }
+        }
         return on
     }
 
@@ -141,5 +187,9 @@ class AppState(context: Context) {
         if (p.getBoolean("seeded", false)) return
         Samples.all.forEach { db.saveSheet(it) }
         p.edit().putBoolean("seeded", true).apply()
+    }
+
+    init {
+        syncSaved()
     }
 }

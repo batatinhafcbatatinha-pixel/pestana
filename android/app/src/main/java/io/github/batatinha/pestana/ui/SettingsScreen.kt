@@ -108,7 +108,7 @@ fun SettingsScreen(state: AppState) {
             SectionTitle("Seus dados (só neste aparelho)")
             ListRow("Fazer backup", "Favoritos, playlists, ajustes por música e cifras próprias") { exporter.launch("pestana-backup.json") }
             ListRow("Restaurar backup", "Junta com o que já existe") { importer.launch(arrayOf("application/json", "text/plain", "*/*")) }
-            ListRow("Cifras salvas para offline", "$cached cifras · toque para apagar o cache (favoritos e playlists ficam)") {
+            ListRow("Cifras salvas para offline", "$cached cifras: favoritas, de playlists, de álbuns favoritos e as 10 últimas abertas · toque para apagar") {
                 state.db.clearCache(); cached = 0; state.toast = "Cache apagado"
             }
             ListRow("Limpar histórico", "Lista de abertas recentemente") { state.db.clearRecents(); state.changed(); state.toast = "Histórico limpo" }

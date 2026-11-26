@@ -249,7 +249,6 @@ fun AlbumScreen(state: AppState, album: AlbumRef) {
                     Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Pill("Tocar em sequência", false) { state.go(Screen.Song(list.first(), list)) }
                         Pill("Artista", false) { state.go(Screen.Artist(ArtistRef(album.artistSlug, album.artist))) }
-                        Pill("Baixar offline", false) { state.downloadForOffline(list) }
                     }
                 }
                 items(list, key = { it.id }) { SongRow(state, it, list) }
