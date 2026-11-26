@@ -688,10 +688,10 @@ private fun OptionRow(label: String, content: @Composable () -> Unit) {
 
 /**
  * Auto-scroll rate for the 1..40 slider. Up to 10 it grows evenly (lyrics with
- * chords); above that it grows faster, up to 8 lines a second, because a page
+ * chords); above that it grows faster, up to 20 lines a second, because a page
  * of tablature has many more lines for the same stretch of music.
  */
 internal fun linesPerSecond(speed: Int): Float {
     val s = speed.coerceIn(1, 40)
-    return if (s <= 10) s * 0.045f else 0.45f * Math.pow(8.0 / 0.45, (s - 10) / 30.0).toFloat()
+    return if (s <= 10) s * 0.045f else 0.45f * Math.pow(20.0 / 0.45, (s - 10) / 30.0).toFloat()
 }
