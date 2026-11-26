@@ -883,6 +883,34 @@ fn wrap_tab(block: &TabBlock, cols: usize, fmt: &dyn Fn(&Chord) -> String, out: 
         return;
     }
 
+    // Only the empty tail of the staff is too long ("--2---0----------------|"
+    // a couple of columns wider than the screen): shorten the tail instead of
+    // cutting the staff in two.
+    let filler = |c: char| matches!(c, '-' | ' ' | '=' | '|');
+    let used = rows
+        .iter()
+        .map(|r| r.iter().rposition(|c| !filler(*c)).map_or(0, |i| i + 1))
+        .chain(below.iter().map(|b| b.iter().rposition(|c| *c != ' ').map_or(0, |i| i + 1)))
+        .chain(above.iter().map(over_width))
+        .max()
+        .unwrap_or(0);
+    if used + 2 <= cols {
+        for o in &above {
+            emit_over(o, 0, usize::MAX, 0, out);
+        }
+        for r in &rows {
+            let mut line: Vec<char> = r.iter().take(cols).copied().collect();
+            if r.len() > cols && r.iter().rev().find(|c| **c != ' ') == Some(&'|') {
+                line[cols - 1] = '|';
+            }
+            out.push(K_TAB, body_spans(&line, tab_prefix(r)));
+        }
+        for b in &below {
+            emit_below(b, 0, usize::MAX, 0, out);
+        }
+        return;
+    }
+
     let prefixes: Vec<usize> = rows.iter().map(|r| tab_prefix(r)).collect();
     let plen = prefixes.iter().copied().max().unwrap_or(0);
     let body_w = cols.saturating_sub(plen).max(8);
@@ -1479,6 +1507,26 @@ G|---------------14---~---------------|
         let r = render(t, "", Options { cols: 30, ..Default::default() });
         let l = plain_lines(&r.json);
         assert_eq!(l.len(), 2, "{l:?}");
+    }
+
+    #[test]
+    fn long_empty_tail_is_shortened_not_wrapped() {
+        // 45 columns on a 43 column screen, notes end at column 28.
+        let t = "    Bm  B7(4/9) Em   F#7
+E|--2----2------0----------2----------------|
+A|--2----2------2------4--------------------|
+";
+        let r = render(t, "", Options { cols: 43, ..Default::default() });
+        let l = plain_lines(&r.json);
+        assert_eq!(l.len(), 3, "{l:?}");
+        assert_eq!(l[1], "E|--2----2------0----------2--------------|", "{l:?}");
+        assert!(l.iter().all(|x| x.chars().count() <= 43), "{l:?}");
+        // Notes up to the end: still wrapped, nothing lost.
+        let t = "E|--2----2------0----------2-------------3--|
+";
+        let r = render(t, "", Options { cols: 43, ..Default::default() });
+        let l = plain_lines(&r.json);
+        assert!(l.len() > 1 && l.concat().contains("3"), "{l:?}");
     }
 
     #[test]
