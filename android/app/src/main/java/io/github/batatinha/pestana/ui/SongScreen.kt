@@ -277,7 +277,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
             withFrameNanos { now ->
                 if (last != 0L) {
                     val dt = (now - last) / 1e9f
-                    scroll.dispatchRawDelta(lineHeightPx * prefs.speed * 0.045f * dt)
+                    scroll.dispatchRawDelta(lineHeightPx * linesPerSecond(prefs.speed) * dt)
                 }
                 last = now
             }
@@ -684,4 +684,14 @@ private fun OptionRow(label: String, content: @Composable () -> Unit) {
         Text(label, color = t.muted, fontSize = 13.sp, modifier = Modifier.width(64.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { content() }
     }
+}
+
+/**
+ * Auto-scroll rate for the 1..40 slider. Up to 10 it grows evenly (lyrics with
+ * chords); above that it grows faster, up to 8 lines a second, because a page
+ * of tablature has many more lines for the same stretch of music.
+ */
+internal fun linesPerSecond(speed: Int): Float {
+    val s = speed.coerceIn(1, 40)
+    return if (s <= 10) s * 0.045f else 0.45f * Math.pow(8.0 / 0.45, (s - 10) / 30.0).toFloat()
 }

@@ -556,7 +556,9 @@ struct SongView: View {
         guard auto, !rendered.lines.isEmpty else { return }
         var line = visible.filter { $0 >= 0 }.min() ?? 0
         while auto && !Task.isCancelled {
-            let perLine = 1.0 / (Double(max(1, prefs.speed)) * 0.045)
+            // Even growth up to 10; faster above it, up to 8 lines a second (tablature).
+            let sp = Double(min(40, max(1, prefs.speed)))
+            let perLine = 1.0 / (sp <= 10 ? sp * 0.045 : 0.45 * pow(8.0 / 0.45, (sp - 10) / 30))
             line += 1
             if line >= rendered.lines.count { auto = false; break }
             withAnimation(.linear(duration: perLine)) { proxy.scrollTo(line, anchor: .top) }
