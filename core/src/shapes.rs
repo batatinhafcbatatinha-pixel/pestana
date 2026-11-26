@@ -239,6 +239,48 @@ pub fn shape_json(name: &str) -> String {
     j.finish()
 }
 
+/// 4-string bass tuning, low to high (E A D G).
+pub const BASS: [u8; 4] = [4, 9, 2, 7];
+
+/// The classic bass box for a chord: root on the E or A string (lowest fret),
+/// fifth on the next string and octave two strings up. For slash chords the
+/// bass note is the root and only its octave is shown.
+/// Returns (frets per string, -1 = not played; index of the root string).
+pub fn bass_box(chord: &Chord) -> ([i8; 4], usize) {
+    let root = chord.bass.unwrap_or(chord.root);
+    let on_e = ((root as i32 - BASS[0] as i32).rem_euclid(12)) as i8;
+    let on_a = ((root as i32 - BASS[1] as i32).rem_euclid(12)) as i8;
+    let (string, fret) = if on_e <= on_a || on_a > 7 { (0usize, on_e) } else { (1usize, on_a) };
+    let mut frets = [-1i8; 4];
+    frets[string] = fret;
+    if chord.bass.is_none() {
+        // Next string is a fourth up: the fifth sits 2 frets higher (b5: 1, #5: 3).
+        let (req, opt) = chord.intervals();
+        let fifth = [6u8, 7, 8].into_iter().find(|f| req.contains(f) || opt.contains(f)).unwrap_or(7);
+        frets[string + 1] = fret + fifth as i8 - 5;
+    }
+    // Two strings up is a minor seventh higher: the octave is 2 frets higher.
+    frets[string + 2] = fret + 2;
+    (frets, string)
+}
+
+/// JSON for a bass diagram: {"frets":[4],"barre":0,"barreFrom":0,"root":i} or "{}".
+pub fn bass_shape_json(name: &str) -> String {
+    let mut j = Json::object();
+    if let Some(c) = Chord::parse(name) {
+        let (frets, root) = bass_box(&c);
+        j.key("frets").begin_array();
+        for f in frets {
+            j.int(f as i64);
+        }
+        j.end_array();
+        j.key("barre").int(0);
+        j.key("barreFrom").int(0);
+        j.key("root").int(root as i64);
+    }
+    j.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +304,22 @@ mod tests {
             let pcs = sounds(fr);
             assert_eq!(pcs[0], c.bass.unwrap_or(c.root), "{name} bass {fr:?}");
         }
+    }
+
+    #[test]
+    fn bass_boxes() {
+        let b = |n: &str| bass_box(&Chord::parse(n).unwrap());
+        // C: root on A string 3rd fret, fifth G on D 5, octave C on G 5.
+        assert_eq!(b("C"), ([-1, 3, 5, 5], 1));
+        // E: open E, fifth B on A 2, octave E on D 2.
+        assert_eq!(b("Em"), ([0, 2, 2, -1], 0));
+        // G on E string 3rd fret.
+        assert_eq!(b("G7"), ([3, 5, 5, -1], 0));
+        // Diminished fifth one fret lower.
+        assert_eq!(b("Bdim"), ([-1, 2, 3, 4], 1));
+        // Slash chord: the bass note and its octave only.
+        assert_eq!(b("D/F#"), ([2, -1, 4, -1], 0));
+        assert!(bass_shape_json("A").contains("\"root\":"));
     }
 
     #[test]

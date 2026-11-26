@@ -23,9 +23,9 @@ import io.github.batatinha.pestana.ChordShape
 
 /** Guitar chord box: strings vertical (low E on the left), 5 frets. */
 @Composable
-fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, showName: Boolean = true) {
+fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, showName: Boolean = true, bass: Boolean = false) {
     val t = LocalReading.current
-    val shape = remember(name) { ChordShape.of(name) }
+    val shape = remember(name, bass) { ChordShape.of(name, bass) }
     val measurer = rememberTextMeasurer()
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         if (showName) {
@@ -38,7 +38,8 @@ fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, s
             val right = w * 0.9f
             val top = h * 0.16f
             val bottom = h * 0.97f
-            val sx = (right - left) / 5f
+            val n = (shape?.frets?.size ?: 6).coerceAtLeast(2)
+            val sx = (right - left) / (n - 1)
             val fy = (bottom - top) / 5f
             val line = t.text.copy(alpha = 0.55f)
             if (shape == null) {
@@ -54,7 +55,7 @@ fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, s
                 val y = top + f * fy
                 drawLine(line, Offset(left, y), Offset(right, y), strokeWidth = if (f == 0 && base == 1) w * 0.045f else w * 0.012f)
             }
-            for (s in 0..5) drawLine(line, Offset(x(s), top), Offset(x(s), bottom), strokeWidth = w * (0.01f + (5 - s) * 0.003f))
+            for (s in 0 until n) drawLine(line, Offset(x(s), top), Offset(x(s), bottom), strokeWidth = w * (0.01f + (n - 1 - s) * 0.003f))
             if (base > 1) {
                 drawText(measurer, "${base}ª", Offset(0f, top + fy * 0.15f), TextStyle(color = t.muted, fontSize = (w / 7.5f / density).sp))
             }
@@ -62,7 +63,7 @@ fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, s
             if (shape.barre > 0) {
                 val y = top + (shape.barre - base + 0.5f) * fy
                 val x1 = x(shape.barreFrom)
-                val x2 = x(5)
+                val x2 = x(n - 1)
                 drawRoundRect(t.chord, Offset(minOf(x1, x2) - r, y - r), Size(kotlin.math.abs(x2 - x1) + 2 * r, 2 * r), CornerRadius(r))
             }
             shape.frets.forEachIndexed { s, f ->
@@ -75,6 +76,7 @@ fun ChordDiagram(name: String, width: Dp = 64.dp, leftHanded: Boolean = false, s
                         drawLine(t.muted, Offset(cx - m, y + m), Offset(cx + m, y - m), strokeWidth = w * 0.02f)
                     }
                     f == 0 -> drawCircle(t.muted, r * 0.7f, Offset(cx, top - fy * 0.45f), style = Stroke(w * 0.018f))
+                    shape.root >= 0 && s != shape.root -> drawCircle(t.chord, r * 0.85f, Offset(cx, top + (f - base + 0.5f) * fy), style = Stroke(w * 0.03f))
                     f != shape.barre || s < shape.barreFrom -> drawCircle(t.chord, r, Offset(cx, top + (f - base + 0.5f) * fy))
                 }
             }

@@ -45,8 +45,11 @@ class Settings(context: Context) {
     /** Index in ChordColors (0 = theme colour). */
     var chordColor by mutableIntStateOf(p.getInt("chordColor", 0))
         private set
-    /** Tinted background behind chords. */
-    var chordBox by mutableStateOf(p.getBoolean("chordBox", true))
+    /** "guitar" or "bass": changes chord diagrams, the preferred version and the tuner. */
+    var instrument by mutableStateOf(p.getString("instrument", "guitar")!!)
+        private set
+    /** Index in LyricColors (0 = theme colour). */
+    var lyricColor by mutableIntStateOf(p.getInt("lyricColor", 0))
         private set
 
 
@@ -64,7 +67,15 @@ class Settings(context: Context) {
     fun putBpm(v: Int) { bpm = v.coerceIn(20, 300); p.edit().putInt("bpm", bpm).apply() }
     fun putBeats(v: Int) { beats = v.coerceIn(1, 12); p.edit().putInt("beats", beats).apply() }
     fun putSubdivision(v: Int) { subdivision = v.coerceIn(1, 4); p.edit().putInt("subdivision", subdivision).apply() }
+    fun putInstrument(v: String) {
+        if (v == instrument) return
+        instrument = v
+        // Tuner follows the instrument.
+        val t = if (v == "bass") "bass_4" else "guitar_std"
+        tuning = t
+        p.edit().putString("instrument", v).putString("tuning", t).apply()
+    }
+    fun putLyricColor(v: Int) { lyricColor = v; p.edit().putInt("lyricColor", v).apply() }
     fun putChordColor(v: Int) { chordColor = v; p.edit().putInt("chordColor", v).apply() }
-    fun putChordBox(v: Boolean) { chordBox = v; p.edit().putBoolean("chordBox", v).apply() }
     fun putAccent(v: Boolean) { accent = v; p.edit().putBoolean("accent", v).apply() }
 }

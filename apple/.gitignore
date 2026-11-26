@@ -1,0 +1,5 @@
+build/
+DerivedData/
+Pestana.xcodeproj/
+dist/
+Payload/

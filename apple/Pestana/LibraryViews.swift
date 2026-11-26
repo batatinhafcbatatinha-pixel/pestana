@@ -1,0 +1,391 @@
+import SwiftUI
+
+struct LibraryView: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var images: Images
+    @Environment(\.reading) private var t
+    @State private var tab = 0
+    @State private var newList = false
+    @State private var newName = ""
+
+    private let tabs = ["Músicas", "Artistas", "Álbuns", "Playlists", "Minhas cifras"]
+
+    var body: some View {
+        let _ = model.version
+        List {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(tabs.indices, id: \.self) { i in Pill(text: tabs[i], selected: tab == i) { tab = i } }
+                }
+            }.rowBackground(t)
+            switch tab {
+            case 0:
+                let songs = model.store.favs("song").map { SongRef(id: $0.id, title: $0.title, artist: $0.sub) }
+                if songs.isEmpty { EmptyStateView(title: "Nenhuma música favorita", message: "Toque no coração ao abrir uma cifra.").rowBackground(t) }
+                ForEach(songs) { SongRowLink(song: $0, queue: songs).rowBackground(t) }
+            case 1:
+                let artists = model.store.favs("artist")
+                if artists.isEmpty { EmptyStateView(title: "Nenhum artista favorito", message: "Favorite artistas pela busca.").rowBackground(t) }
+                ForEach(artists, id: \.id) { a in
+                    NavigationLink(value: Route.artist(ArtistRef(slug: a.id, name: a.title))) {
+                        HStack(spacing: 14) { Thumb(text: a.title, url: images.artist(a.id)); Row(title: a.title) }
+                    }.rowBackground(t)
+                }
+            case 2:
+                let albums = model.store.favs("album")
+                if albums.isEmpty { EmptyStateView(title: "Nenhum álbum favorito", message: "Favorite álbuns pela busca ou na página do artista.").rowBackground(t) }
+                ForEach(albums, id: \.id) { a in
+                    let parts = a.id.split(separator: "/").map(String.init)
+                    NavigationLink(value: Route.album(AlbumRef(slug: parts.count > 1 ? parts[1] : "", name: a.title, artist: a.sub, artistSlug: parts.first ?? "", year: a.extra))) {
+                        HStack(spacing: 14) {
+                            Thumb(text: a.title, symbol: "opticaldisc", url: images.album(a.id), round: false)
+                            Row(title: a.title, subtitle: [a.sub, a.extra].filter { !$0.isEmpty }.joined(separator: " · "))
+                        }
+                    }.rowBackground(t)
+                }
+            case 3:
+                let lists = model.store.playlists()
+                if lists.isEmpty { EmptyStateView(title: "Nenhuma playlist", message: "Crie listas para ensaios, shows ou estudo.").rowBackground(t) }
+                ForEach(lists) { p in
+                    NavigationLink(value: Route.playlist(p.id, p.name)) {
+                        HStack(spacing: 14) {
+                            Thumb(text: p.name, symbol: "music.note.list", round: false)
+                            Row(title: p.name, subtitle: p.count == 1 ? "1 música" : "\(p.count) músicas")
+                        }
+                    }.rowBackground(t)
+                }
+            default:
+                let local = model.store.localSongs()
+                if local.isEmpty { EmptyStateView(title: "Nenhuma cifra própria", message: "Importe colando o texto de uma cifra ou um link.").rowBackground(t) }
+                ForEach(local) { SongRowLink(song: $0, queue: local).rowBackground(t) }
+            }
+        }
+        .themedList(t)
+        .navigationTitle("Biblioteca")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button { newName = ""; newList = true } label: { Label("Nova playlist", systemImage: "plus") }
+                    NavigationLink(value: Route.importPlaylist("")) { Label("Importar playlist da Cifra Club", systemImage: "music.note.list") }
+                    NavigationLink(value: Route.importSheet("")) { Label("Importar cifra", systemImage: "square.and.arrow.down") }
+                } label: { Image(systemName: "plus") }
+            }
+        }
+        .alert("Nova playlist", isPresented: $newList) {
+            TextField("Nome", text: $newName)
+            Button("Criar") {
+                let n = newName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { model.store.createPlaylist(n); model.changed(); tab = 3 }
+            }
+            Button("Cancelar", role: .cancel) {}
+        }
+    }
+}
+
+struct PlaylistView: View {
+    let id: Int64
+    @State var name: String
+    @EnvironmentObject var model: AppModel
+    @Environment(\.reading) private var t
+    @Environment(\.dismiss) private var dismiss
+    @State private var songs: [SongRef] = []
+    @State private var renaming = false
+    @State private var newName = ""
+    @State private var deleting = false
+
+    var body: some View {
+        List {
+            if !songs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        NavigationLink(value: Route.song(songs[0], songs)) {
+                            Label("Tocar em sequência", systemImage: "play.fill").font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 7)
+                                .background(Capsule().fill(t.chord)).foregroundColor(t.bg)
+                        }.buttonStyle(.plain)
+                        if let dl = model.download {
+                            Pill(text: "Baixando \(dl.0)/\(dl.1)…", selected: true) {}
+                        } else {
+                            let missing = songs.filter { !$0.isLocal && !model.store.hasSheet($0.url) }.count
+                            Pill(text: missing > 0 ? "Baixar offline (\(missing))" : "✓ Disponível offline", selected: false) {
+                                if missing > 0 { model.downloadForOffline(songs) }
+                            }
+                        }
+                    }
+                }.rowBackground(t)
+            } else {
+                EmptyStateView(title: "Playlist vazia", message: "Abra uma cifra e use ⋯ › Adicionar à playlist.").rowBackground(t)
+            }
+            ForEach(songs) { s in
+                SongRowLink(song: s, queue: songs).rowBackground(t)
+            }
+            .onDelete { idx in
+                for i in idx { model.store.removeFromPlaylist(id, songs[i].id) }
+                songs.remove(atOffsets: idx)
+                model.changed()
+            }
+            .onMove { from, to in
+                songs.move(fromOffsets: from, toOffset: to)
+                model.store.reorderPlaylist(id, songs)
+            }
+        }
+        .themedList(t)
+        .navigationTitle(name)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button { newName = name; renaming = true } label: { Label("Renomear", systemImage: "pencil") }
+                    Button(role: .destructive) { deleting = true } label: { Label("Apagar playlist", systemImage: "trash") }
+                } label: { Image(systemName: "ellipsis.circle") }
+            }
+            #if os(iOS)
+            ToolbarItem(placement: .primaryAction) { EditButton() }
+            #endif
+        }
+        .alert("Renomear", isPresented: $renaming) {
+            TextField("Nome", text: $newName)
+            Button("Salvar") {
+                let n = newName.trimmingCharacters(in: .whitespaces)
+                if !n.isEmpty { model.store.renamePlaylist(id, n); name = n; model.changed() }
+            }
+            Button("Cancelar", role: .cancel) {}
+        }
+        .confirmationDialog("Apagar \"\(name)\"? As cifras continuam salvas.", isPresented: $deleting, titleVisibility: .visible) {
+            Button("Apagar", role: .destructive) { model.store.deletePlaylist(id); model.changed(); dismiss() }
+        }
+        .onAppear { songs = model.store.playlistSongs(id) }
+        .onChange(of: model.version) { _ in songs = model.store.playlistSongs(id) }
+    }
+}
+
+/// Choose (or create) a playlist and add the song to it.
+struct AddToPlaylistSheet: View {
+    let song: SongRef
+    @EnvironmentObject var model: AppModel
+    @Environment(\.reading) private var t
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Nova playlist") {
+                    HStack {
+                        TextField("Nome (ex.: Ensaio sábado)", text: $name)
+                        Button("Criar") {
+                            let n = name.trimmingCharacters(in: .whitespaces)
+                            guard !n.isEmpty else { return }
+                            let id = model.store.createPlaylist(n)
+                            model.store.addToPlaylist(id, song)
+                            model.changed()
+                            model.say("Adicionada a \(n)")
+                            dismiss()
+                        }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                Section("Suas playlists") {
+                    ForEach(model.store.playlists()) { p in
+                        Button {
+                            model.store.addToPlaylist(p.id, song)
+                            model.changed()
+                            model.say("Adicionada a \(p.name)")
+                            dismiss()
+                        } label: { Row(title: p.name, subtitle: "\(p.count) músicas") }
+                    }
+                }
+            }
+            .navigationTitle("Adicionar à playlist")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancelar") { dismiss() } } }
+        }
+        .frame(minWidth: 320, minHeight: 360)
+    }
+}
+
+/// Paste a chord sheet, or a link to one, and keep it locally.
+struct ImportView: View {
+    var initialText: String
+    @EnvironmentObject var model: AppModel
+    @Environment(\.reading) private var t
+    @State private var link = ""
+    @State private var title = ""
+    @State private var artist = ""
+    @State private var key = ""
+    @State private var text = ""
+    @State private var busy = false
+    @State private var error: String?
+    @State private var openedSong: SongRef?
+    @State private var showSong = false
+    @State private var playlistLink: String?
+    @State private var showPlaylist = false
+
+    var body: some View {
+        Form {
+            Section("De um link") {
+                HStack {
+                    TextField("https://…", text: $link)
+                    Button("Abrir") { fetchLink() }.disabled(busy)
+                }
+                if busy { ProgressView() }
+                if let error { Text(error).foregroundColor(t.chord).font(.footnote) }
+                NavigationLink(value: Route.importPlaylist("")) { Text("Importar playlist da Cifra Club") }
+            }
+            Section("Ou cole o texto") {
+                TextField("Título", text: $title)
+                TextField("Artista", text: $artist)
+                TextField("Tom (opcional)", text: $key)
+                TextEditor(text: $text)
+                    .font(.system(size: 13, design: .monospaced))
+                    .frame(minHeight: 260)
+                Button("Salvar e abrir") {
+                    let id = model.store.nextLocalId()
+                    let s = Sheet(url: "local:\(id)", songId: id, title: title.isEmpty ? "Sem título" : title, artist: artist,
+                                  key: key, capo: 0, tuning: "", text: text, versions: [])
+                    model.store.saveSheet(s)
+                    model.changed()
+                    openedSong = SongRef(id: id, title: s.title, artist: s.artist)
+                    showSong = true
+                }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(t.bg)
+        .navigationTitle("Importar cifra")
+        .navigationDestination(isPresented: $showSong) {
+            if let s = openedSong { SongView(song: s, queue: []) }
+        }
+        .navigationDestination(isPresented: $showPlaylist) {
+            ImportPlaylistView(initialLink: playlistLink ?? "")
+        }
+        .onAppear { if text.isEmpty { text = initialText } }
+    }
+
+    private func fetchLink() {
+        let l = link.trimmingCharacters(in: .whitespaces)
+        guard l.hasPrefix("http") else { error = "Cole um link começando com http"; return }
+        if Source.isPlaylistLink(l) { playlistLink = l; showPlaylist = true; return }
+        busy = true
+        error = nil
+        Task {
+            do {
+                let ref = SongRef.fromLink(l, title: "", artist: "")
+                let s = try await Source.fetchSheet(l, songId: ref.id, title: "", artist: "")
+                model.store.saveSheet(s)
+                openedSong = SongRef.fromLink(l, title: s.title.isEmpty ? "Sem título" : s.title, artist: s.artist)
+                showSong = true
+            } catch {
+                self.error = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+}
+
+/// Imports Cifra Club playlists: the link of one playlist, or of a profile to pick several.
+struct ImportPlaylistView: View {
+    var initialLink: String
+    @EnvironmentObject var model: AppModel
+    @Environment(\.reading) private var t
+    @Environment(\.dismiss) private var dismiss
+    @State private var link = ""
+    @State private var busy = false
+    @State private var status: String?
+    @State private var page: Source.PlaylistPage?
+    @State private var name = ""
+    @State private var offline = true
+    @State private var picked = Set<String>()
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Cole o link de uma playlist pública, ou do seu perfil para escolher várias. Não precisa entrar na conta.")
+                    .font(.footnote).foregroundColor(t.muted)
+                HStack {
+                    TextField("https://www.cifraclub.com.br/…", text: $link)
+                    Button("Ler") { read() }.disabled(busy)
+                }
+                if busy { ProgressView() }
+                if let status { Text(status).font(.footnote).foregroundColor(t.muted) }
+            }
+            if let p = page {
+                Section {
+                    Toggle("Baixar cifras para usar offline", isOn: $offline)
+                }
+                if !p.songs.isEmpty {
+                    Section("\(p.songs.count) músicas") {
+                        TextField("Nome da playlist", text: $name)
+                        ForEach(p.songs) { s in HStack(spacing: 12) { SongThumb(song: s, size: 34); Row(title: s.title, subtitle: s.artist) } }
+                    }
+                } else {
+                    Section("\(p.playlists.count) playlists neste perfil") {
+                        ForEach(p.playlists, id: \.url) { pl in
+                            Toggle(pl.label, isOn: Binding(
+                                get: { picked.contains(pl.url) },
+                                set: { on in if on { picked.insert(pl.url) } else { picked.remove(pl.url) } }
+                            ))
+                        }
+                    }
+                }
+                Section {
+                    Button(p.songs.isEmpty ? "Importar \(picked.count) playlists" : "Importar \(p.songs.count) músicas") { importAll() }
+                        .disabled(busy || (p.songs.isEmpty && picked.isEmpty))
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(t.bg)
+        .navigationTitle("Importar playlist")
+        .onAppear {
+            if link.isEmpty && !initialLink.isEmpty { link = initialLink; read() }
+        }
+    }
+
+    private func read() {
+        let l = link.trimmingCharacters(in: .whitespaces)
+        guard l.hasPrefix("http") else { status = "Cole o link da playlist ou do perfil"; return }
+        busy = true
+        status = "Lendo a página…"
+        page = nil
+        Task {
+            do {
+                let p = try await Source.readPlaylistPage(l)
+                page = p
+                name = p.title.isEmpty ? "Playlist importada" : p.title
+                picked = Set(p.playlists.map(\.url))
+                status = nil
+            } catch {
+                status = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+
+    private func importAll() {
+        guard let p = page else { return }
+        busy = true
+        Task {
+            var all: [SongRef] = []
+            if !p.songs.isEmpty {
+                let id = model.store.createPlaylist(name.isEmpty ? "Playlist importada" : name)
+                p.songs.forEach { model.store.addToPlaylist(id, $0) }
+                all = p.songs
+            } else {
+                let chosen = p.playlists.filter { picked.contains($0.url) }
+                for (i, pl) in chosen.enumerated() {
+                    status = "Importando \(pl.label) (\(i + 1)/\(chosen.count))…"
+                    if let sub = try? await Source.readPlaylistPage(pl.url), !sub.songs.isEmpty {
+                        let id = model.store.createPlaylist(pl.label)
+                        sub.songs.forEach { model.store.addToPlaylist(id, $0) }
+                        all += sub.songs
+                    }
+                }
+            }
+            model.changed()
+            model.say("Playlist importada")
+            if offline && !all.isEmpty { model.downloadForOffline(all) }
+            busy = false
+            dismiss()
+        }
+    }
+}

@@ -1,0 +1,51 @@
+# Xcode project for the Apple apps (generated in CI with `xcodegen generate`).
+# One SwiftUI code base, two targets: macOS and iPhone/iPad.
+name: Pestana
+options:
+  bundleIdPrefix: io.github.batatinha
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "13.0"
+settings:
+  base:
+    MARKETING_VERSION: 0.3.0
+    CURRENT_PROJECT_VERSION: 3
+    SWIFT_VERSION: "5.0"
+    SWIFT_OBJC_BRIDGING_HEADER: Pestana/Bridging-Header.h
+    OTHER_LDFLAGS: ["-lpestana"]
+    GENERATE_INFOPLIST_FILE: YES
+    PRODUCT_NAME: Pestana
+    PRODUCT_BUNDLE_IDENTIFIER: io.github.batatinha.pestana
+    INFOPLIST_KEY_CFBundleDisplayName: Pestana
+    INFOPLIST_KEY_NSMicrophoneUsageDescription: "O afinador ouve o instrumento. O som é analisado só no aparelho; nada é gravado ou enviado."
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEAD_CODE_STRIPPING: YES
+targets:
+  Pestana-macOS:
+    type: application
+    platform: macOS
+    sources: [Pestana]
+    scheme: {}
+    settings:
+      base:
+        LIBRARY_SEARCH_PATHS: ["$(PROJECT_DIR)/build/macos"]
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.music
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT License"
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+  Pestana-iOS:
+    type: application
+    platform: iOS
+    sources: [Pestana]
+    scheme: {}
+    settings:
+      base:
+        LIBRARY_SEARCH_PATHS: ["$(PROJECT_DIR)/build/ios"]
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"

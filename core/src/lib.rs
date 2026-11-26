@@ -3,6 +3,7 @@
 //! transposition, chord diagrams and the tuner's pitch detector.
 
 pub mod chord;
+pub mod ffi;
 pub mod html;
 pub mod json;
 pub mod pitch;

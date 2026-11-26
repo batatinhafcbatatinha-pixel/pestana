@@ -105,8 +105,22 @@ object ChordColors {
     }
 }
 
-/** Background tint behind each chord so it pops out of the lyric. */
-val ReadingTheme.chordBg get() = chord.copy(alpha = if (dark) 0.17f else 0.12f)
+/** Optional lyric colour: (light, dark) pairs. */
+object LyricColors {
+    val all = listOf(
+        "Do tema" to null,
+        "Contraste máximo" to (Color(0xFF000000) to Color(0xFFFFFFFF)),
+        "Cinza suave" to (Color(0xFF44474D) to Color(0xFFB9BCC2)),
+        "Azul-noite" to (Color(0xFF1E2A44) to Color(0xFFC9D6F0)),
+        "Sépia" to (Color(0xFF4A3A2A) to Color(0xFFE3D2B4)),
+        "Verde-musgo" to (Color(0xFF2F3E2B) to Color(0xFFCFE0C3)),
+    )
+
+    fun apply(t: ReadingTheme, index: Int): ReadingTheme {
+        val pair = all.getOrNull(index)?.second ?: return t
+        return t.copy(text = if (t.dark) pair.second else pair.first)
+    }
+}
 
 val LocalReading = staticCompositionLocalOf { Themes.Dark }
 

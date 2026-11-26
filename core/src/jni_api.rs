@@ -81,6 +81,17 @@ pub extern "system" fn Java_io_github_batatinha_pestana_Native_chordShape(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_io_github_batatinha_pestana_Native_bassShape(
+    mut env: JNIEnv,
+    _: JClass,
+    name: JString,
+) -> jstring {
+    let n = get(&mut env, &name);
+    let r = crate::shapes::bass_shape_json(&n);
+    out(&mut env, &r)
+}
+
+#[no_mangle]
 pub extern "system" fn Java_io_github_batatinha_pestana_Native_newDetector(_env: JNIEnv, _: JClass) -> jlong {
     Box::into_raw(Box::new(Detector::new())) as jlong
 }

@@ -58,8 +58,19 @@ fun SettingsScreen(state: AppState) {
     Column(Modifier.fillMaxSize()) {
         TopBar("Ajustes", onBack = { state.back() })
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            SectionTitle("Instrumento")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                io.github.batatinha.pestana.Instruments.all.forEach { (id, label) -> Pill(label, s.instrument == id) { s.putInstrument(id) } }
+            }
+            Text(
+                "Muda os diagramas de acorde, abre a versão para baixo quando existir e ajusta o afinador.",
+                color = t.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+            )
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                ToggleRow("Canhoto", s.leftHanded, "Diagramas espelhados e cordas do afinador na ordem do canhoto") { s.putLeftHanded(it) }
+            }
             SectionTitle("Tema de leitura")
-            androidx.compose.runtime.CompositionLocalProvider(LocalChordColor provides s.chordColor, LocalSettingsBox provides s.chordBox) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalChordColor provides s.chordColor) {
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     ThemeCard(null, s.theme == "auto") { s.putTheme("auto") }
                     Themes.all.forEach { th -> ThemeCard(th, s.theme == th.id) { s.putTheme(th.id) } }
@@ -73,14 +84,14 @@ fun SettingsScreen(state: AppState) {
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChordColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.chordColor == i) { s.putChordColor(i) } }
             }
-            Column(Modifier.padding(horizontal = 20.dp)) {
-                ToggleRow("Fundo destacado nos acordes", s.chordBox, "Um realce atrás de cada acorde") { s.putChordBox(it) }
+            SectionTitle("Cor da letra")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                LyricColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.lyricColor == i) { s.putLyricColor(i) } }
             }
             SectionTitle("Cifras")
             Column(Modifier.padding(horizontal = 20.dp)) {
                 ToggleRow("Mostrar tablaturas", s.showTabs, "Solos e riffs dentro da cifra") { s.putShowTabs(it) }
                 ToggleRow("Mostrar diagramas dos acordes", s.showDiagrams) { s.putShowDiagrams(it) }
-                ToggleRow("Diagramas para canhoto", s.leftHanded) { s.putLeftHanded(it) }
                 ToggleRow("Manter a tela ligada", s.keepScreenOn, "Enquanto uma cifra estiver aberta") { s.putKeepScreenOn(it) }
                 ToggleRow("Rolar com as teclas de volume", s.volumeKeys, "Pedais Bluetooth funcionam sempre (Page Up/Down, setas)") { s.putVolumeKeys(it) }
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -124,7 +135,6 @@ private fun ThemeCard(th: ReadingTheme?, selected: Boolean, onClick: () -> Unit)
             androidx.compose.ui.text.buildAnnotatedString {
                 val st = androidx.compose.ui.text.SpanStyle(
                     color = p.chord, fontWeight = FontWeight.ExtraBold,
-                    background = if (LocalSettingsBox.current) p.chordBg else androidx.compose.ui.graphics.Color.Unspecified,
                 )
                 withStyle(st) { append("G") }
                 append("      ")
@@ -140,4 +150,3 @@ private fun ThemeCard(th: ReadingTheme?, selected: Boolean, onClick: () -> Unit)
 }
 
 private val LocalChordColor = androidx.compose.runtime.compositionLocalOf { 0 }
-private val LocalSettingsBox = androidx.compose.runtime.compositionLocalOf { true }

@@ -234,7 +234,10 @@ fun TunerScreen(state: AppState) {
                 if (byString) {
                     StringChip("Auto", chosen < 0, false, false) { chosen = -1 }
                 }
-                tuning.strings.forEachIndexed { i, m ->
+                // Left-handed players hold the high string on the left.
+                val order = if (s.leftHanded) tuning.strings.indices.reversed() else tuning.strings.indices
+                for (i in order) {
+                    val m = tuning.strings[i]
                     val active = i == stringIdx && has
                     StringChip(Notes.name(m, flats = tuning.label.contains('b')), if (byString) chosen == i else active, done[i] == true, active) {
                         byString = true; chosen = i
@@ -242,7 +245,7 @@ fun TunerScreen(state: AppState) {
                 }
             }
             Text(
-                if (byString) "Toque numa corda para fixar · \"Auto\" detecta sozinho" else "Grave → agudo",
+                if (byString) "Toque numa corda para fixar · \"Auto\" detecta sozinho" else if (s.leftHanded) "Agudo → grave" else "Grave → agudo",
                 color = t.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp),
             )
             Spacer(Modifier.height(18.dp))

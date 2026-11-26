@@ -30,6 +30,10 @@ pub const ST_CHORD: u8 = 1;
 pub const ST_HEADER: u8 = 2;
 pub const ST_TAB: u8 = 3;
 pub const ST_NOTE: u8 = 4;
+/// Fret numbers and techniques inside tablature (h, p, b, /, ~ ...).
+pub const ST_TAB_NOTE: u8 = 5;
+/// Technique marks inside tablature: h, p, b, r, /, \, ~, x, ( ).
+pub const ST_TAB_TECH: u8 = 6;
 
 /// Line kinds sent to the UI (used for spacing).
 pub const K_TEXT: u8 = 0;
@@ -100,7 +104,20 @@ fn normalize(text: &str) -> Vec<String> {
                         let n = 4 - out.chars().count() % 4;
                         out.extend(std::iter::repeat(' ').take(n));
                     }
-                    '\u{a0}' | '\u{2007}' | '\u{202f}' => out.push(' '),
+                    // Odd spaces become plain spaces.
+                    '\u{a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => out.push(' '),
+                    // Invisible characters some sites sprinkle in the text (zero-width
+                    // spaces, joiners, direction marks, soft hyphens, BOM): drop them,
+                    // or "Am" stops looking like a chord.
+                    '\u{200b}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{2066}'..='\u{206f}'
+                    | '\u{feff}'
+                    | '\u{ad}'
+                    | '\u{34f}'
+                    | '\u{180e}'
+                    | '\u{61c}' => {}
                     c if c.is_control() => {}
                     c => out.push(c),
                 }
@@ -579,12 +596,41 @@ fn wrap_pair(segs: &[Seg], lyric: Option<&str>, cols: usize, out: &mut Out) {
     }
 }
 
+/// Splits a tab line so fret numbers stand out from the string lines:
+/// "e|--3h5--|" -> [("e|--", TAB), ("3h5", TAB_NOTE), ("--|", TAB)].
+fn tab_spans(line: &str) -> Vec<(u8, String)> {
+    let cs: Vec<char> = line.chars().collect();
+    // The string name ("e|", "D#|", "A ") is part of the drawing, not a note.
+    let lead = cs.iter().take_while(|c| **c == ' ').count();
+    let prefix = match cs.iter().skip(lead).position(|c| *c == '|' || *c == ':') {
+        Some(p) if p <= 3 => lead + p + 1,
+        _ => lead,
+    };
+    let mut out: Vec<(u8, String)> = Vec::new();
+    let mut push = |style: u8, c: char, out: &mut Vec<(u8, String)>| match out.last_mut() {
+        Some((st, text)) if *st == style => text.push(c),
+        _ => out.push((style, c.to_string())),
+    };
+    for (i, c) in cs.iter().enumerate() {
+        let style = if i < prefix || matches!(c, '-' | '|' | ':' | ' ' | '=') {
+            ST_TAB
+        } else if c.is_ascii_digit() {
+            ST_TAB_NOTE
+        } else {
+            // h p b r / \ ~ x ( ) ^ v t s . * : hammer-on, pull-off, bend, slide...
+            ST_TAB_TECH
+        };
+        push(style, *c, &mut out);
+    }
+    out
+}
+
 fn wrap_tab(block: &[String], cols: usize, out: &mut Out) {
     let rows: Vec<Vec<char>> = block.iter().map(|l| chars(l)).collect();
     let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     if width <= cols {
         for r in &rows {
-            out.push(K_TAB, vec![(ST_TAB, r.iter().collect())]);
+            out.push(K_TAB, tab_spans(&r.iter().collect::<String>()));
         }
         return;
     }
@@ -626,7 +672,7 @@ fn wrap_tab(block: &[String], cols: usize, out: &mut Out) {
                 + &" ".repeat(plen - p.len().min(plen))
                 + &r.iter().skip(off + start).take(end - start).collect::<String>();
             let s = if p.is_empty() { r.iter().skip(start).take(end - start).collect::<String>() } else { s };
-            out.push(K_TAB, vec![(ST_TAB, s)]);
+            out.push(K_TAB, tab_spans(&s));
         }
         start = end;
         if start < body_len {
@@ -801,7 +847,7 @@ C            G
     #[test]
     fn chords_view_drops_tabs_and_tab_sections() {
         let r = render(SONG, "G", Options { view: View::Chords, ..Default::default() });
-        assert!(!r.json.contains("B|---3"));
+        assert!(!r.json.contains("B|---"));
         assert!(!r.json.contains("Tab - Solo"));
         assert!(!r.json.contains("Parte 1"));
         assert!(r.json.contains("Quando"));
@@ -811,7 +857,7 @@ C            G
     #[test]
     fn solos_view_only_has_solo() {
         let r = render(SONG, "G", Options { view: View::Solos, ..Default::default() });
-        assert!(r.json.contains("B|---3"));
+        assert!(r.json.contains("B|---") && r.json.contains(",5,\"3\","));
         assert!(r.json.contains("Tab - Solo"));
         assert!(!r.json.contains("Quando"));
     }
@@ -872,6 +918,30 @@ C            G
         assert!(chord_segments("C  G  (2x)", 0).is_some());
         assert!(chord_segments("| C | G | Am F |", 0).is_some());
         assert!(chord_segments("(C  G)", 0).is_some());
+    }
+
+    #[test]
+    fn invisible_characters_do_not_hide_chords() {
+        let text = "\u{feff}[Primeira Parte]\n\n  \u{200b}Am\u{200c}\nPsychic spies\u{200b} from China\n\u{2060}        F\u{a0}  Dm\nIt's Californication\n";
+        let items = classify(&normalize(text));
+        assert!(matches!(&items[0], Item::Header(h) if h == "[Primeira Parte]"), "{items:?}");
+        let pairs = items.iter().filter(|i| matches!(i, Item::Chords(_, Some(_)))).count();
+        assert_eq!(pairs, 2, "{items:?}");
+    }
+
+    #[test]
+    fn tab_numbers_get_their_own_style() {
+        let spans = tab_spans("e|--3h5---12b14r12--7/9~--(5)--x-|");
+        assert_eq!(spans[0], (ST_TAB, "e|--".to_string()));
+        assert_eq!(spans[1], (ST_TAB_NOTE, "3".to_string()));
+        assert_eq!(spans[2], (ST_TAB_TECH, "h".to_string()));
+        assert_eq!(spans[3], (ST_TAB_NOTE, "5".to_string()));
+        let tech: String = spans.iter().filter(|s| s.0 == ST_TAB_TECH).map(|s| s.1.as_str()).collect();
+        assert_eq!(tech, "hbr/~()x");
+        let notes: Vec<&str> = spans.iter().filter(|s| s.0 == ST_TAB_NOTE).map(|s| s.1.as_str()).collect();
+        assert_eq!(notes, ["3", "5", "12", "14", "12", "7", "9", "5"]);
+        let spans = tab_spans("Eb|-0-|");
+        assert_eq!(spans[0], (ST_TAB, "Eb|-".to_string()));
     }
 
     #[test]

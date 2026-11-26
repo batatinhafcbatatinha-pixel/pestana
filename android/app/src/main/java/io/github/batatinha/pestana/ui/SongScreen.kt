@@ -140,6 +140,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     var chordPopup by remember { mutableStateOf<String?>(null) }
     var addToList by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
+    @Suppress("DEPRECATION") val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
     suspend fun load(force: Boolean) {
         error = null
@@ -166,11 +167,15 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
         flags = withContext(Dispatchers.Default) { Rendered.parse(Native.render(m.text, m.key, 0, false, 0, true, 0, 1000)) }
     }
 
-    val sections = remember(main, flags) {
+    val bass = settings.instrument == "bass"
+    val sections = remember(main, flags, bass) {
         val m = main ?: return@remember emptyList()
         val f = flags
+        val isBass = { v: io.github.batatinha.pestana.Version -> v.label.contains("baixo", true) || v.url.contains("baixo", true) || v.url.contains("bass", true) }
         buildList {
             add(Section("Principal", m.url, 0))
+            // Bass players see the bass version right away.
+            if (bass) m.versions.filter(isBass).forEachIndexed { i, v -> add(Section(if (i == 0) "Baixo" else v.label, v.url, 0)) }
             val simp = m.versions.firstOrNull { it.label.contains("simplif", true) || it.url.contains("simplificada") }
             val simpUrl = simp?.url ?: if (m.url.startsWith(Source.SITE)) Source.simplifiedUrl(m.url) else null
             add(Section("Simplificada", simpUrl, 0, simplified = true))
@@ -178,11 +183,20 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
             if (f != null && f.hasSolos) add(Section("Solos", m.url, 2))
             if (f != null && f.hasRiffs) add(Section("Riffs", m.url, 3))
             m.versions.filter { v ->
-                !v.label.contains("simplif", true) && !v.url.contains("simplificada") && !v.label.contains("principal", true)
+                !v.label.contains("simplif", true) && !v.url.contains("simplificada") && !v.label.contains("principal", true) &&
+                    !(bass && isBass(v))
             }.forEach { add(Section(it.label.replaceFirstChar { c -> c.uppercase() }, it.url, 0)) }
         }
     }
     val sec = sections.getOrNull(selected) ?: sections.firstOrNull()
+    // Open the bass version first when the instrument is bass.
+    var pickedBass by remember(song.id) { mutableStateOf(false) }
+    LaunchedEffect(sections, bass) {
+        if (bass && !pickedBass && sections.size > 1 && sections[1].label == "Baixo") {
+            selected = 1
+            pickedBass = true
+        }
+    }
 
     // Load another version's page when its tab is chosen.
     LaunchedEffect(sec?.url, main) {
@@ -251,7 +265,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
-    val annotated = remember(rendered, t, settings.fontSize, settings.chordBox) {
+    val annotated = remember(rendered, t, settings.fontSize) {
         val r = rendered ?: return@remember AnnotatedString("")
         buildAnnotatedString {
             r.lines.forEachIndexed { i, line ->
@@ -261,15 +275,14 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                             LinkAnnotation.Clickable(
                                 sp.text,
                                 TextLinkStyles(
-                                    SpanStyle(
-                                        color = t.chord, fontWeight = FontWeight.ExtraBold,
-                                        background = if (settings.chordBox) t.chordBg else androidx.compose.ui.graphics.Color.Unspecified,
-                                    ),
+                                    SpanStyle(color = t.chord, fontWeight = FontWeight.ExtraBold),
                                 ),
                             ) { chordPopup = sp.text },
                         ) { append(sp.text) }
                         Style.HEADER -> withStyle(SpanStyle(color = t.header, fontWeight = FontWeight.SemiBold)) { append(sp.text) }
-                        Style.TAB -> withStyle(SpanStyle(color = t.tab)) { append(sp.text) }
+                        Style.TAB -> withStyle(SpanStyle(color = t.tab.copy(alpha = 0.75f))) { append(sp.text) }
+                        Style.TAB_NOTE -> withStyle(SpanStyle(color = t.chord, fontWeight = FontWeight.Bold)) { append(sp.text) }
+                        Style.TAB_TECH -> withStyle(SpanStyle(color = t.chord)) { append(sp.text) }
                         Style.NOTE -> withStyle(SpanStyle(color = t.muted, fontStyle = FontStyle.Italic)) { append(sp.text) }
                         else -> append(sp.text)
                     }
@@ -341,7 +354,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
                                 r.chords.forEach { c ->
-                                    Box(Modifier.clickable { chordPopup = c }) { ChordDiagram(c, 54.dp, settings.leftHanded) }
+                                    Box(Modifier.clickable { chordPopup = c }) { ChordDiagram(c, 54.dp, settings.leftHanded, bass = bass) }
                                 }
                             }
                         } else {
@@ -383,6 +396,13 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                 onDelete = {
                     state.db.deleteSong(song.id); state.changed(); state.back()
                 },
+                onDiagnostic = {
+                    val s = source
+                    if (s != null) {
+                        clipboard.setText(AnnotatedString(diagnostic(s)))
+                        state.toast = "Texto copiado. Cole na conversa para análise."
+                    }
+                },
                 isLocal = song.isLocal,
             )
         }
@@ -401,7 +421,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
         Dialog(onDismissRequest = { chordPopup = null }) {
             Surface(shape = RoundedCornerShape(20.dp), color = t.surface) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    ChordDiagram(name, 170.dp, settings.leftHanded)
+                    ChordDiagram(name, 170.dp, settings.leftHanded, bass = settings.instrument == "bass")
                     Spacer(Modifier.height(8.dp))
                     Text("Toque fora para fechar", color = t.muted, fontSize = 12.sp)
                 }
@@ -477,6 +497,7 @@ private fun Controls(
     onRefresh: () -> Unit,
     onOpenWeb: () -> Unit,
     onDelete: () -> Unit,
+    onDiagnostic: () -> Unit,
     isLocal: Boolean,
 ) {
     val t = LocalReading.current
@@ -506,9 +527,13 @@ private fun Controls(
                 Panel.TEXT -> Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                     Stepper("Tamanho", "${s.fontSize.toInt()}", { s.putFontSize(s.fontSize - 1) }, { s.putFontSize(s.fontSize + 1) })
                     Stepper("Espaçamento", "%.2f".format(s.lineSpacing), { s.putLineSpacing(s.lineSpacing - 0.05f) }, { s.putLineSpacing(s.lineSpacing + 0.05f) })
-                    ToggleRow("Fundo destacado nos acordes", s.chordBox) { s.putChordBox(it) }
                     Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Acordes", color = t.muted, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
                         ChordColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.chordColor == i) { s.putChordColor(i) } }
+                    }
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Letra", color = t.muted, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
+                        LyricColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.lyricColor == i) { s.putLyricColor(i) } }
                     }
                     Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Pill("Sistema", s.theme == "auto") { s.putTheme("auto") }
@@ -516,6 +541,11 @@ private fun Controls(
                     }
                 }
                 Panel.MORE -> Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Instrumento", color = t.muted, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
+                        io.github.batatinha.pestana.Instruments.all.forEach { (id, label) -> Pill(label, s.instrument == id) { s.putInstrument(id) } }
+                    }
+                    ToggleRow("Canhoto", s.leftHanded) { s.putLeftHanded(it) }
                     ToggleRow("Tablaturas", s.showTabs) { s.putShowTabs(it) }
                     ToggleRow("Diagramas dos acordes", s.showDiagrams) { s.putShowDiagrams(it) }
                     ToggleRow("Metrônomo (${state.settings.bpm} BPM)", Metronome.playing) {
@@ -527,6 +557,7 @@ private fun Controls(
                         if (!isLocal) Pill("Baixar de novo", false, onRefresh)
                         if (!isLocal) Pill("Abrir no site", false, onOpenWeb)
                         if (isLocal) Pill("Apagar cifra", false, onDelete)
+                        Pill("Copiar para diagnóstico", false, onDiagnostic)
                     }
                 }
                 Panel.NONE -> {}
@@ -593,5 +624,19 @@ fun ToggleRow(label: String, value: Boolean, sub: String? = null, onChange: (Boo
             if (sub != null) Text(sub, color = t.muted, fontSize = 12.sp)
         }
         Switch(value, onChange, colors = SwitchDefaults.colors(checkedTrackColor = t.chord, checkedThumbColor = t.bg, uncheckedTrackColor = t.surface2))
+    }
+}
+
+/** The raw sheet with invisible characters spelled out, to debug parsing. */
+private fun diagnostic(s: Sheet): String = buildString {
+    append("Pestana diagnóstico\n")
+    append("url: ").append(s.url).append('\n')
+    append("tom: ").append(s.key).append("  capo: ").append(s.capo).append('\n')
+    append("versões: ").append(s.versions.joinToString { it.label + " " + it.url }).append("\n---\n")
+    for (c in s.text) {
+        val type = Character.getType(c).toByte()
+        val odd = c != '\n' && (c.code < 32 || c.code in 0x7f..0xa0 || type == Character.FORMAT ||
+            type == Character.SPACE_SEPARATOR && c != ' ')
+        if (odd) append("<U+").append(c.code.toString(16).uppercase().padStart(4, '0')).append('>') else append(c)
     }
 }

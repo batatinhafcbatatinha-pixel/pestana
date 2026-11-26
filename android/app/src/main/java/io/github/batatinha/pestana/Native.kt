@@ -27,6 +27,9 @@ object Native {
     /** Chord name -> {"frets":[6],"barre":n,"barreFrom":i} or "{}". */
     @JvmStatic external fun chordShape(name: String): String
 
+    /** Chord name -> 4-string bass box {"frets":[4],"root":i,...} or "{}". */
+    @JvmStatic external fun bassShape(name: String): String
+
     @JvmStatic external fun newDetector(): Long
     @JvmStatic external fun freeDetector(ptr: Long)
 

@@ -21,7 +21,10 @@ class MainActivity : ComponentActivity() {
         state.seedIfEmpty()
         if (savedInstanceState == null) handleShare(intent)
         setContent {
-            val t = io.github.batatinha.pestana.ui.ChordColors.apply(Themes.resolve(state.settings.theme), state.settings.chordColor)
+            val t = io.github.batatinha.pestana.ui.LyricColors.apply(
+                io.github.batatinha.pestana.ui.ChordColors.apply(Themes.resolve(state.settings.theme), state.settings.chordColor),
+                state.settings.lyricColor,
+            )
             SideEffect {
                 val bar = t.bg.toArgb()
                 enableEdgeToEdge(

@@ -93,6 +93,8 @@ object Style {
     const val HEADER = 2
     const val TAB = 3
     const val NOTE = 4
+    const val TAB_NOTE = 5
+    const val TAB_TECH = 6
 }
 
 object Kind {
@@ -149,18 +151,24 @@ class Rendered(
     }
 }
 
-class ChordShape(val frets: IntArray, val barre: Int, val barreFrom: Int) {
+/** Frets per string (low string first); `root` marks the bass box's root string, -1 otherwise. */
+class ChordShape(val frets: IntArray, val barre: Int, val barreFrom: Int, val root: Int = -1) {
     companion object {
         private val cache = HashMap<String, ChordShape?>()
 
-        fun of(name: String): ChordShape? = synchronized(cache) {
-            cache.getOrPut(name) {
-                val o = JSONObject(Native.chordShape(name))
+        fun of(name: String, bass: Boolean = false): ChordShape? = synchronized(cache) {
+            cache.getOrPut((if (bass) "b:" else "g:") + name) {
+                val o = JSONObject(if (bass) Native.bassShape(name) else Native.chordShape(name))
                 val f = o.optJSONArray("frets") ?: return@getOrPut null
-                ChordShape(IntArray(6) { f.getInt(it) }, o.optInt("barre"), o.optInt("barreFrom"))
+                ChordShape(IntArray(f.length()) { f.getInt(it) }, o.optInt("barre"), o.optInt("barreFrom"), o.optInt("root", -1))
             }
         }
     }
+}
+
+/** Instruments the app adapts to (diagrams, preferred version, tuner). */
+object Instruments {
+    val all = listOf("guitar" to "Violão / Guitarra", "bass" to "Baixo")
 }
 
 /** Per-song reader settings, remembered locally. */
