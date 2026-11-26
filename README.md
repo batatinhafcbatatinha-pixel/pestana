@@ -10,6 +10,17 @@
 
 Cifras, afinador e metrônomo num app nativo, leve e sem conta, para **Android, Mac e iPhone/iPad**.
 
+<p align="center">
+  <img src="docs/screenshots/leitor.png" width="200" alt="Leitor de cifras">
+  <img src="docs/screenshots/sepia-tablatura.png" width="200" alt="Tema sépia com tablatura destacada">
+  <img src="docs/screenshots/baixo.png" width="200" alt="Diagramas de baixo">
+</p>
+<p align="center">
+  <img src="docs/screenshots/afinador.png" width="200" alt="Afinador">
+  <img src="docs/screenshots/metronomo.png" width="200" alt="Metrônomo">
+  <img src="docs/screenshots/ajustes.png" width="200" alt="Ajustes">
+</p>
+
 ## Baixar
 
 Em [Releases](https://github.com/batatinhafcbatatinha-pixel/pestana/releases), cada versão traz todas as plataformas juntas:
@@ -54,7 +65,7 @@ Tem precisão de amostra: os cliques são mixados no próprio fluxo de áudio, e
 
 A busca usa o endpoint público de busca da Cifra Club. O próprio celular abre a página da música como um navegador faria: primeiro tenta HTTP simples e, se não der, usa o WebView do sistema, bloqueando anúncios. O núcleo em Rust extrai o bloco `<pre>`, o tom, o capotraste, a afinação e os links de outras versões.
 
-O parser não depende de classes CSS de um site específico, então funciona com outras páginas de cifra (opção **Importar › link**). Também dá para **colar o texto** de qualquer cifra, ou **compartilhar** um link ou texto de outro app para o Pestana.
+O parser não depende de classes CSS de um site específico, então funciona com outras páginas de cifra (opção **Importar › link**). Isso inclui o **Ultimate Guitar**, cuja cifra vem num JSON embutido na página. O **Songsterr** não é suportado: lá só existem tablaturas desenhadas a partir de partituras, sem cifra em texto. Também dá para **colar o texto** de qualquer cifra, ou **compartilhar** um link ou texto de outro app para o Pestana.
 
 **Importar playlists da Cifra Club:** cole o link de uma playlist pública, ou do seu perfil para escolher várias, sem fazer login. O app cria playlists locais e, se você quiser, baixa todas as cifras para usar offline.
 

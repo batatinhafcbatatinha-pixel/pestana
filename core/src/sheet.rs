@@ -366,6 +366,18 @@ fn classify(lines: &[String]) -> Vec<Item> {
     items
 }
 
+/// "[Tab - Intro]" -> "[Intro]" once the tablature is hidden.
+fn untab_label(label: &str) -> String {
+    let inner = label.trim().trim_start_matches('[').trim_end_matches(']');
+    let low = inner.to_lowercase();
+    for p in ["tab - ", "tab -", "tab: ", "tab:", "tab "] {
+        if low.starts_with(p) && inner.len() > p.len() {
+            return format!("[{}]", inner[p.len()..].trim());
+        }
+    }
+    label.to_string()
+}
+
 /// Keep only what the view asks for.
 fn filter(items: Vec<Item>, view: View, show_tabs: bool) -> Vec<Item> {
     let keep_tabs = show_tabs && view != View::Chords;
@@ -377,25 +389,43 @@ fn filter(items: Vec<Item>, view: View, show_tabs: bool) -> Vec<Item> {
             while idx < items.len() {
                 let it = &items[idx];
                 match it {
-                    Item::Tab(..) | Item::TabNote(_) if !keep_tabs => {}
-                    Item::Header(_) if !keep_tabs => {
+                    Item::Tab(..) | Item::TabNote(_) if !keep_tabs => {
+                        // The gap after a hidden tab block goes with it, so the
+                        // chord lines that framed the tab sit together.
                         let mut j = idx + 1;
-                        let mut only_tabs = true;
-                        let mut saw_tab = false;
-                        while j < items.len() && !matches!(items[j], Item::Header(_)) {
-                            match &items[j] {
-                                Item::Tab(..) | Item::TabNote(_) => saw_tab = true,
-                                Item::Blank => {}
-                                Item::Chords(segs, _) if segs.first().is_some_and(|s| s.style == ST_HEADER) => break,
-                                _ => {
-                                    only_tabs = false;
-                                    break;
-                                }
-                            }
+                        while j < items.len() && matches!(items[j], Item::Blank) {
                             j += 1;
                         }
-                        if !(only_tabs && saw_tab) {
-                            out.push(it.clone());
+                        let next_is_header = match items.get(j) {
+                            Some(Item::Header(_)) => true,
+                            Some(Item::Chords(segs, _)) => segs.first().is_some_and(|s| s.style == ST_HEADER),
+                            _ => false,
+                        };
+                        // Keep one blank before the next section; drop it inside a section.
+                        if !next_is_header {
+                            idx = j - 1;
+                        }
+                    }
+                    Item::Chords(segs, lyric) if !keep_tabs && segs.first().is_some_and(|s| s.style == ST_HEADER) => {
+                        let mut segs = segs.clone();
+                        segs[0].text = untab_label(&segs[0].text);
+                        out.push(Item::Chords(segs, lyric.clone()));
+                    }
+                    Item::Header(_) if !keep_tabs => {
+                        // A header whose first content is tablature ("[Solo]" + tab)
+                        // labels that tab: it goes away with it.
+                        let mut j = idx + 1;
+                        while j < items.len() && matches!(items[j], Item::Blank) {
+                            j += 1;
+                        }
+                        let labels_tab = matches!(items.get(j), Some(Item::Tab(..)) | Some(Item::TabNote(_)));
+                        if labels_tab {
+                            // Skip the blanks between the header and its tab too.
+                            idx = j - 1;
+                        } else {
+                            if let Item::Header(h) = it {
+                                out.push(Item::Header(untab_label(h)));
+                            }
                         }
                     }
                     _ => out.push(it.clone()),
@@ -942,6 +972,46 @@ C            G
         assert_eq!(notes, ["3", "5", "12", "14", "12", "7", "9", "5"]);
         let spans = tab_spans("Eb|-0-|");
         assert_eq!(spans[0], (ST_TAB, "Eb|-".to_string()));
+    }
+
+    #[test]
+    fn hidden_tabs_leave_no_gaps() {
+        let text = "[Tab - Intro]
+
+   Am        F
+E|--5--3--|
+B|--5--3--|
+
+   C    G
+E|--8--7--|
+B|--8--7--|
+
+[Primeira Parte]
+";
+        let r = render(text, "", Options { show_tabs: false, ..Default::default() });
+        assert!(r.json.contains("[Intro]") && !r.json.contains("Tab - "), "{}", r.json);
+        // Intro header, blank, Am F, C G (no blank between them), blank, Primeira Parte.
+        let lines = &r.json[r.json.find("\"lines\"").unwrap()..];
+        let kinds: Vec<&str> = lines.split("],[").collect();
+        let am = kinds.iter().position(|k| k.contains("\"Am\"")).unwrap();
+        assert!(kinds[am + 1].contains("\"C\""), "{}", r.json);
+        assert!(kinds[am + 2].starts_with('6'), "blank before next section: {}", r.json);
+
+        // A solo in the middle: its header and tab go away without leaving a hole.
+        let mid = "C   G
+Letra um
+
+[Solo]
+
+E|--5--3--|
+B|--5--3--|
+
+Am  F
+Letra dois
+";
+        let r = render(mid, "", Options { show_tabs: false, ..Default::default() });
+        assert!(!r.json.contains("[Solo]"), "{}", r.json);
+        assert!(!r.json.contains("[6],[6]"), "{}", r.json);
     }
 
     #[test]

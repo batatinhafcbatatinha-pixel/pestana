@@ -148,7 +148,7 @@ object Source {
     /** Downloads and parses one sheet page. Throws with a readable message on failure. */
     suspend fun fetchSheet(ctx: Context, url: String, songId: String, title: String, artist: String): Sheet {
         val html = withContext(Dispatchers.IO) {
-            withTimeoutOrNull(15_000) { runCatching { kotlinx.coroutines.runInterruptible { get(ctx, url) } }.getOrNull() }?.takeIf { (code, body) -> code == 200 && body.contains("<pre", true) }?.second
+            withTimeoutOrNull(15_000) { runCatching { kotlinx.coroutines.runInterruptible { get(ctx, url) } }.getOrNull() }?.takeIf { (code, body) -> code == 200 && hasSheet(body) }?.second
         } ?: WebFetcher.fetch(ctx, url, WebFetcher.Wait.CHORDS) ?: error("Não consegui abrir a cifra. Verifique a conexão.")
         val sheet = withContext(Dispatchers.Default) {
             Sheet.fromExtract(Native.extractPage(html, url), url, songId, title, artist)
@@ -195,6 +195,9 @@ object Source {
         return "cifraclub" in l && ("playlist" in l || "/musico/" in l)
     }
 
+    /** A page with a chord sheet: a <pre> block, or Ultimate Guitar's embedded store. */
+    fun hasSheet(body: String) = body.contains("<pre", true) || body.contains("wiki_tab")
+
     fun simplifiedUrl(songUrl: String) = songUrl.trimEnd('/') + "/simplificada.html"
 }
 
@@ -205,7 +208,7 @@ object Source {
 internal object WebFetcher {
     enum class Wait { CHORDS, LINKS }
 
-    private val allowedHosts = listOf("cifraclub", "sscdn", "cloudflare", "akamai", "gstatic", "googleapis")
+    private val allowedHosts = listOf("cifraclub", "sscdn", "cloudflare", "akamai", "gstatic", "googleapis", "ultimate-guitar", "ugstatic")
 
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun fetch(ctx: Context, url: String, wait: Wait, timeoutMs: Long = 25_000): String? = withContext(Dispatchers.Main) {
@@ -242,7 +245,7 @@ internal object WebFetcher {
                     override fun run() {
                         if (done) return
                         val js = when (wait) {
-                            Wait.CHORDS -> "(function(){return document.querySelector('pre')?document.documentElement.outerHTML:null})()"
+                            Wait.CHORDS -> "(function(){var h=document.documentElement.outerHTML;return (document.querySelector('pre')||h.indexOf('wiki_tab')>=0)?h:null})()"
                             // Lists render late: wait until the number of links stops changing.
                             Wait.LINKS -> "(function(){return document.readyState=='complete'?String(document.querySelectorAll('a[href]').length):null})()"
                         }

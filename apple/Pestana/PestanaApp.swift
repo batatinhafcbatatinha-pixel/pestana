@@ -31,23 +31,23 @@ struct ThemedRoot: View {
     }
 }
 
-enum Tab: Hashable { case search, library, tuner, metronome, settings }
+enum AppTab: Hashable { case search, library, tuner, metronome, settings }
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.reading) private var t
-    @State private var tab: Tab = .search
+    @State private var tab: AppTab = .search
 
     var body: some View {
         ZStack(alignment: .bottom) {
             #if os(macOS)
             NavigationSplitView {
-                List(selection: Binding(get: { tab }, set: { if let v = $0 { tab = v } })) {
-                    Label("Buscar", systemImage: "magnifyingglass").tag(Tab.search)
-                    Label("Biblioteca", systemImage: "books.vertical").tag(Tab.library)
-                    Label("Afinador", systemImage: "tuningfork").tag(Tab.tuner)
-                    Label("Metrônomo", systemImage: "metronome").tag(Tab.metronome)
-                    Label("Ajustes", systemImage: "gearshape").tag(Tab.settings)
+                List(selection: Binding<AppTab?>(get: { tab }, set: { if let v = $0 { tab = v } })) {
+                    Label("Buscar", systemImage: "magnifyingglass").tag(AppTab.search)
+                    Label("Biblioteca", systemImage: "books.vertical").tag(AppTab.library)
+                    Label("Afinador", systemImage: "tuningfork").tag(AppTab.tuner)
+                    Label("Metrônomo", systemImage: "metronome").tag(AppTab.metronome)
+                    Label("Ajustes", systemImage: "gearshape").tag(AppTab.settings)
                 }
                 .navigationSplitViewColumnWidth(min: 180, ideal: 200)
             } detail: {
@@ -55,10 +55,10 @@ struct RootView: View {
             }
             #else
             TabView(selection: $tab) {
-                screen(.search).tabItem { Label("Buscar", systemImage: "magnifyingglass") }.tag(Tab.search)
-                screen(.library).tabItem { Label("Biblioteca", systemImage: "books.vertical") }.tag(Tab.library)
-                screen(.tuner).tabItem { Label("Afinador", systemImage: "tuningfork") }.tag(Tab.tuner)
-                screen(.metronome).tabItem { Label("Metrônomo", systemImage: "metronome") }.tag(Tab.metronome)
+                screen(.search).tabItem { Label("Buscar", systemImage: "magnifyingglass") }.tag(AppTab.search)
+                screen(.library).tabItem { Label("Biblioteca", systemImage: "books.vertical") }.tag(AppTab.library)
+                screen(.tuner).tabItem { Label("Afinador", systemImage: "tuningfork") }.tag(AppTab.tuner)
+                screen(.metronome).tabItem { Label("Metrônomo", systemImage: "metronome") }.tag(AppTab.metronome)
             }
             #endif
             if let msg = model.toast {
@@ -75,7 +75,7 @@ struct RootView: View {
     }
 
     @ViewBuilder
-    private func screen(_ tab: Tab) -> some View {
+    private func screen(_ tab: AppTab) -> some View {
         NavigationStack {
             Group {
                 switch tab {

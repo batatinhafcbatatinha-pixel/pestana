@@ -251,7 +251,7 @@ fun ImportScreen(state: AppState, initialText: String, initialLink: String) {
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = t.chord, trackColor = t.bg)
         LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp)) {
             item {
-                SectionTitle("De um link", Modifier.padding(start = 0.dp))
+                SectionTitle("De um link (Cifra Club, Ultimate Guitar…)", Modifier.padding(start = 0.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(link, { link = it }, Modifier.weight(1f), singleLine = true, placeholder = { Text("https://…") })
                     Spacer(Modifier.size(8.dp))

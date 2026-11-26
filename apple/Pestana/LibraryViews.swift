@@ -220,7 +220,7 @@ struct ImportView: View {
 
     var body: some View {
         Form {
-            Section("De um link") {
+            Section("De um link (Cifra Club, Ultimate Guitar…)") {
                 HStack {
                     TextField("https://…", text: $link)
                     Button("Abrir") { fetchLink() }.disabled(busy)

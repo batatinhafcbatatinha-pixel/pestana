@@ -143,7 +143,18 @@ private fun ThemeCard(th: ReadingTheme?, selected: Boolean, onClick: () -> Unit)
             fontFamily = FontFamily.Monospace, fontSize = 12.sp,
         )
         Text("Quando eu ", color = p.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-        Text("e|--3--2--", color = p.tab, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        Text(
+            androidx.compose.ui.text.buildAnnotatedString {
+                val line = androidx.compose.ui.text.SpanStyle(color = p.tab.copy(alpha = 0.75f))
+                val note = androidx.compose.ui.text.SpanStyle(color = p.chord, fontWeight = FontWeight.Bold)
+                withStyle(line) { append("e|--") }
+                withStyle(note) { append("3") }
+                withStyle(line) { append("--") }
+                withStyle(note) { append("2h4") }
+                withStyle(line) { append("-") }
+            },
+            fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+        )
         Spacer(Modifier.height(6.dp))
         Text(th?.name ?: "Do sistema", color = p.muted, fontSize = 11.sp, maxLines = 1)
     }

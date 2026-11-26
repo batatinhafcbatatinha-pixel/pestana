@@ -161,7 +161,94 @@ const VERSION_WORDS: [&str; 14] = [
 
 const VERSION_SKIP: [&str; 8] = ["imprimir", "letra", "video", "vídeo", "aula", "coment", "enviar", "corrigir"];
 
+/// Reads a JSON string literal starting right after its opening quote.
+fn json_string(s: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match it.next()? {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' | 'f' => {}
+                'u' => {
+                    let hex: String = it.by_ref().take(4).collect();
+                    let mut code = u32::from_str_radix(&hex, 16).ok()?;
+                    if (0xD800..0xDC00).contains(&code) {
+                        // Surrogate pair: "🎸"
+                        let rest: String = it.by_ref().take(6).collect();
+                        let low = rest.strip_prefix("\\u").and_then(|h| u32::from_str_radix(h, 16).ok())?;
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    }
+                    out.push(char::from_u32(code).unwrap_or('\u{fffd}'));
+                }
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn json_field<'a>(json: &'a str, from: usize, key: &str) -> Option<(usize, &'a str)> {
+    let pat = format!("\"{key}\":");
+    let i = from + json[from..].find(&pat)? + pat.len();
+    Some((i, json[i..].trim_start()))
+}
+
+/// Ultimate Guitar pages carry the sheet in an embedded JSON store
+/// (`<div class="js-store" data-content="...">`) using [ch]Am[/ch] and
+/// [tab]...[/tab] markup. Returns the same JSON as `extract`.
+fn ultimate_guitar(html: &str) -> Option<String> {
+    let data = if let Some(i) = html.find("js-store") {
+        let rest = &html[i..];
+        let start = rest.find("data-content=\"")? + "data-content=\"".len();
+        let end = rest[start..].find('"')?;
+        decode_entities(&rest[start..start + end])
+    } else if html.contains("\"wiki_tab\"") {
+        html.to_string()
+    } else {
+        return None;
+    };
+    let (wiki, _) = json_field(&data, 0, "wiki_tab")?;
+    let (_, content) = json_field(&data, wiki, "content")?;
+    let raw = json_string(content.strip_prefix('"')?)?;
+    let text = raw.replace("[ch]", "").replace("[/ch]", "").replace("[tab]", "").replace("[/tab]", "");
+    let text = text.replace("\r\n", "\n");
+
+    let string_field = |k: &str| -> String {
+        json_field(&data, 0, k)
+            .and_then(|(_, v)| v.strip_prefix('"').and_then(json_string))
+            .unwrap_or_default()
+    };
+    let capo = json_field(&data, 0, "capo")
+        .map(|(_, v)| v.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .and_then(|d| d.parse::<i64>().ok())
+        .unwrap_or(0);
+    let key = string_field("tonality_name");
+    let tuning = json_field(&data, 0, "tuning")
+        .and_then(|(i, _)| json_field(&data, i, "value"))
+        .and_then(|(_, v)| v.strip_prefix('"').and_then(json_string))
+        .unwrap_or_default();
+
+    let mut j = Json::object();
+    j.key("title").string(&string_field("song_name"));
+    j.key("artist").string(&string_field("artist_name"));
+    j.key("key").string(if Chord::parse(&key).is_some() { &key } else { "" });
+    j.key("capo").int(capo);
+    j.key("tuning").string(if tuning == "E A D G B E" { "" } else { &tuning });
+    j.key("text").string(text.trim_matches('\n'));
+    j.key("versions").begin_array();
+    j.end_array();
+    Some(j.finish())
+}
+
 pub fn extract(html: &str, page_url: &str) -> String {
+    if let Some(ug) = ultimate_guitar(html) {
+        return ug;
+    }
     let low = lower(html);
 
     // Sheet: the longest <pre>.
@@ -382,6 +469,24 @@ mod tests {
         assert!(!j.contains("estilos") && !j.contains("evil"), "{j}");
         assert!(j.contains(r#""url":"https://www.site.com/musico/123/playlists/456/""#), "{j}");
         assert!(j.contains(r#""title":"Ensaio""#), "{j}");
+    }
+
+    #[test]
+    fn ultimate_guitar_store() {
+        // JSON escapes as they appear in the page: \r\n and é.
+        let content = "[Intro]\\r\\n[ch]Em7[/ch]   [ch]G[/ch]\\r\\n\\r\\n[Verse 1]\\r\\n[ch]Em7[/ch]          [ch]G[/ch]\\r\\nToday is gonna be the day \\u00e9\\r\\n[tab]e|--3--|\\r\\nB|--3--|[/tab]";
+        let json = format!(
+            r#"{{"store":{{"page":{{"data":{{"tab":{{"song_name":"Wonderwall","artist_name":"Oasis","tonality_name":"F#m"}},"tab_view":{{"meta":{{"capo":2,"tuning":{{"name":"Standard","value":"E A D G B E"}}}},"wiki_tab":{{"content":"{content}"}}}}}}}}}}}}"#
+        );
+        let page = format!(r#"<html><body><div class="js-store" data-content="{}"></div></body></html>"#, json.replace('"', "&quot;"));
+        let j = extract(&page, "https://tabs.ultimate-guitar.com/tab/oasis/wonderwall-chords-27596");
+        assert!(j.contains(r#""title":"Wonderwall""#), "{j}");
+        assert!(j.contains(r#""artist":"Oasis""#), "{j}");
+        assert!(j.contains(r#""key":"F#m""#), "{j}");
+        assert!(j.contains(r#""capo":2"#), "{j}");
+        assert!(j.contains(r#""tuning":"""#), "{j}");
+        assert!(j.contains("Em7          G\\nToday is gonna be the day é"), "{j}");
+        assert!(j.contains("e|--3--|") && !j.contains("[ch]") && !j.contains("[tab]"), "{j}");
     }
 
     #[test]

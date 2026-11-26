@@ -112,7 +112,7 @@ enum Source {
 
     static func fetchSheet(_ url: String, songId: String, title: String, artist: String) async throws -> Sheet {
         var html: String?
-        if let r = try? await get(url), r.0 == 200, r.1.range(of: "<pre", options: .caseInsensitive) != nil {
+        if let r = try? await get(url), r.0 == 200, r.1.range(of: "<pre", options: .caseInsensitive) != nil || r.1.contains("wiki_tab") {
             html = r.1
         }
         if html == nil { html = await WebFetcher.fetch(url, wait: .chords) }
@@ -186,7 +186,7 @@ enum WebFetcher {
         if let rules { return rules }
         let json = """
         [{"trigger":{"url-filter":".*","load-type":["third-party"]},"action":{"type":"block"}},
-         {"trigger":{"url-filter":"(sscdn|cloudflare|akamai|gstatic|googleapis|cifraclub)"},"action":{"type":"ignore-previous-rules"}}]
+         {"trigger":{"url-filter":"(sscdn|cloudflare|akamai|gstatic|googleapis|cifraclub|ultimate-guitar|ugstatic)"},"action":{"type":"ignore-previous-rules"}}]
         """
         rules = try? await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "pestana-block", encodedContentRuleList: json)
         return rules
@@ -211,7 +211,7 @@ enum WebFetcher {
             try? await Task.sleep(nanoseconds: 700_000_000)
             switch wait {
             case .chords:
-                if let html = await eval(web, "document.querySelector('pre') ? document.documentElement.outerHTML : null") as? String {
+                if let html = await eval(web, "(function(){var h=document.documentElement.outerHTML;return (document.querySelector('pre')||h.indexOf('wiki_tab')>=0)?h:null})()") as? String {
                     return html
                 }
             case .links:
