@@ -221,7 +221,7 @@ jobs:
           cd dist
           sha256sum *.apk *.dmg *.ipa > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          cat > notes.md <<EOF
+          cat > ../notes.md <<EOF
           **Android:** \`pestana-*-android.apk\` (x86_64 only for emulators/Chromebooks).
           **Mac:** \`pestana-*-mac.dmg\` (Apple silicon and Intel). First open: right-click › Open, since the app is not notarized.
           **iPhone/iPad:** \`pestana-*-iphone.ipa\`, install with SideStore or AltStore.
@@ -229,5 +229,5 @@ jobs:
           Built from source by GitHub Actions. Check any file with:
           \`gh attestation verify <file> -R $REPO\`
           EOF
-          gh release create "$TAG" * --repo "$REPO" --verify-tag --title "Pestana ${TAG#v}" --notes-file notes.md \
+          gh release create "$TAG" * --repo "$REPO" --verify-tag --title "Pestana ${TAG#v}" --notes-file ../notes.md \
             || gh release upload "$TAG" * --repo "$REPO" --clobber
