@@ -327,6 +327,10 @@ fn is_tab_mark(line: &str) -> bool {
     if ["pm", "p.m", "let ring", "l.r", "harm", "vib"].iter().any(|w| low.starts_with(w)) {
         return true;
     }
+    // "T      T": notes fretted with the thumb.
+    if t.split_whitespace().all(|w| w == "T") {
+        return true;
+    }
     let visible = t.chars().filter(|c| !c.is_whitespace()).count().max(1);
     let letters = t.chars().filter(|c| c.is_alphabetic()).count();
     letters * 2 <= visible
@@ -771,10 +775,28 @@ fn tab_spans(line: &str) -> Vec<(u8, String)> {
     body_spans(&cs, prefix)
 }
 
+/// A string number written inside a row, where a second staff starts on the
+/// same line ("1 |-------  4 |---7--"): a lone digit with a space before it
+/// and a bar or a space after it.
+fn is_row_label(cs: &[char], i: usize) -> bool {
+    ('1'..='8').contains(&cs[i])
+        && (i == 0 || cs[i - 1] == ' ')
+        && match cs.get(i + 1) {
+            Some('|') => true,
+            Some(' ') => cs[i + 1..].iter().find(|c| **c != ' ').is_some_and(|c| matches!(c, '|' | '-')),
+            _ => false,
+        }
+}
+
+/// Something to play: a fret number or a muted note, not a string label.
+fn is_played(cs: &[char], i: usize) -> bool {
+    (cs[i].is_ascii_digit() && !is_row_label(cs, i)) || matches!(cs[i], 'x' | 'X')
+}
+
 fn body_spans(cs: &[char], prefix: usize) -> Vec<(u8, String)> {
     let mut out: Vec<(u8, String)> = Vec::new();
     for (i, c) in cs.iter().enumerate() {
-        let style = if i < prefix || matches!(c, '-' | '|' | ':' | ' ' | '=') {
+        let style = if i < prefix || matches!(c, '-' | '|' | ':' | ' ' | '=') || is_row_label(cs, i) {
             ST_TAB
         } else if c.is_ascii_digit() {
             ST_TAB_NOTE
@@ -841,6 +863,13 @@ fn wrap_tab(block: &TabBlock, cols: usize, fmt: &dyn Fn(&Chord) -> String, out: 
         }
     };
 
+    // A staff with nothing on it and nothing written around it (sites leave a
+    // stray empty string line after the last tab) is not worth a line.
+    let playable = rows.iter().any(|r| (0..r.len()).any(|i| is_played(r, i)));
+    if !playable && above.is_empty() && below.is_empty() {
+        return;
+    }
+
     if width <= cols {
         for o in &above {
             emit_over(o, 0, usize::MAX, 0, out);
@@ -883,7 +912,9 @@ fn wrap_tab(block: &TabBlock, cols: usize, fmt: &dyn Fn(&Chord) -> String, out: 
             c > 0 && a != ' ' && b != ' '
         })
     };
-    let has_notes = |from: usize, to: usize| rows.iter().any(|r| (from..to).any(|c| !matches!(col(r, c), '-' | '|' | ' ' | '=' | ':')));
+    let has_notes = |from: usize, to: usize| {
+        rows.iter().any(|r| (plen + from..(plen + to).min(r.len())).any(|i| is_played(r, i)))
+    };
 
     // Balanced cuts: as many chunks as needed, about the same width each.
     let mut cuts: Vec<(usize, usize)> = Vec::new();
@@ -913,29 +944,33 @@ fn wrap_tab(block: &TabBlock, cols: usize, fmt: &dyn Fn(&Chord) -> String, out: 
         start = end;
     }
 
-    let mut first = true;
-    for (start, end) in cuts {
-        // Nothing to play here (a leftover "|" or a few dashes): skip it.
-        if !first && !has_notes(start, end) {
-            continue;
-        }
-        if !first {
+    // Chunks with nothing to play (a leftover "|", a few dashes, a "~" cut off
+    // its note) are skipped; an entirely empty staff keeps its first chunk.
+    let keep: Vec<(usize, usize)> = if playable {
+        cuts.into_iter().filter(|(a, b)| has_notes(*a, *b)).collect()
+    } else {
+        cuts.into_iter().take(1).collect()
+    };
+    for (n, (start, end)) in keep.into_iter().enumerate() {
+        if n > 0 {
             out.push(K_BLANK, vec![]);
         }
-        let (from, pad) = if first { (0, 0) } else { (plen + start, plen) };
+        let (from, pad) = if start == 0 { (0, 0) } else { (plen + start, plen) };
         for o in &above {
             emit_over(o, from, plen + end, pad, out);
         }
         for (r, p) in rows.iter().zip(prefixes.iter()) {
-            let mut line: Vec<char> = r[..(*p).min(r.len())].to_vec();
-            line.extend(std::iter::repeat(' ').take(plen - (*p).min(plen)));
+            // Rows of one block may name their string differently ("4 |--" over
+            // "- |--"): at the start of the staff every column is drawn as written.
+            let head = if start == 0 { plen } else { *p };
+            let mut line: Vec<char> = r[..head.min(r.len())].to_vec();
+            line.extend(std::iter::repeat(' ').take(plen.saturating_sub(line.len())));
             line.extend(r.iter().skip(plen + start).take(end - start));
             out.push(K_TAB, body_spans(&line, *p));
         }
         for b in &below {
             emit_below(b, from, plen + end, pad, out);
         }
-        first = false;
     }
 }
 
@@ -1407,6 +1442,72 @@ D5
         let joined = plain_lines(&r.json).join("\n");
         assert!(!joined.contains("[Solo]"), "{joined}");
         assert_eq!(joined, "C   G\nLetra um\n\nAm  F\nLetra dois", "{joined}");
+    }
+
+    #[test]
+    fn empty_staff_is_dropped() {
+        // A stray empty string line after the last tab (seen on real pages).
+        let t = "E|--3--5--|
+B|--3--5--|
+
+E|---------------------------------------------------|
+
+fim
+";
+        for cols in [20, 80] {
+            let r = render(t, "", Options { cols, ..Default::default() });
+            let l = plain_lines(&r.json);
+            assert_eq!(l.iter().filter(|x| x.starts_with("E|")).count(), 1, "cols {cols}: {l:?}");
+            assert!(l.iter().any(|x| x == "fim"), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn chunks_without_notes_are_dropped_even_first() {
+        // Two staves on one line: the first is empty, and "4" names a string.
+        let t = "  |-------    |-----------7h10p7--------------
+1 |-------  4 |------------------7------------
+";
+        let r = render(t, "", Options { cols: 26, ..Default::default() });
+        let l = plain_lines(&r.json);
+        assert!(l.iter().all(|x| x.is_empty() || x.chars().any(|c| c.is_ascii_digit())), "{l:?}");
+        assert!(l.iter().any(|x| x.contains("7h10p7")), "{l:?}");
+        // A "~" cut off from its note is not a chunk worth showing.
+        let t = "E|--12--14-----12---------------------|
+G|---------------14---~---------------|
+";
+        let r = render(t, "", Options { cols: 30, ..Default::default() });
+        let l = plain_lines(&r.json);
+        assert_eq!(l.len(), 2, "{l:?}");
+    }
+
+    #[test]
+    fn thumb_marks_stay_with_the_tab() {
+        let t = "|----5---(5)-------|
+|5/7---------------|
+  T          T
+";
+        let r = render(t, "", Options { show_tabs: false, ..Default::default() });
+        assert!(r.json.ends_with("\"lines\":[]}"), "{}", r.json);
+    }
+
+    #[test]
+    fn string_number_inside_a_row_is_not_a_note() {
+        let spans = tab_spans("1 |-------  4 |----7--");
+        let notes: Vec<&str> = spans.iter().filter(|(st, _)| *st == ST_TAB_NOTE).map(|(_, t)| t.as_str()).collect();
+        assert_eq!(notes, vec!["7"], "{spans:?}");
+    }
+
+    #[test]
+    fn rows_with_different_string_names_keep_their_start() {
+        // "- |" has no name the parser knows; its first columns must not vanish.
+        let t = "- |-------7/9--------9---7-----7--
+4 |-----5------------------10-----
+";
+        let r = render(t, "", Options { cols: 22, ..Default::default() });
+        let l = plain_lines(&r.json);
+        assert!(l[0].starts_with("- |-------7/9"), "{l:?}");
+        assert!(l[1].starts_with("4 |-----5"), "{l:?}");
     }
 
     #[test]
