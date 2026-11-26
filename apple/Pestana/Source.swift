@@ -168,6 +168,11 @@ enum Source {
         return l.contains("cifraclub") && (l.contains("playlist") || l.contains("/musico/"))
     }
 
+    /// Cifra Club keeps the bass version at <song>/tabs-baixo/.
+    static func bassURL(_ songURL: String) -> String {
+        (songURL.hasSuffix("/") ? String(songURL.dropLast()) : songURL) + "/tabs-baixo/"
+    }
+
     static func simplifiedURL(_ songURL: String) -> String {
         (songURL.hasSuffix("/") ? String(songURL.dropLast()) : songURL) + "/simplificada.html"
     }

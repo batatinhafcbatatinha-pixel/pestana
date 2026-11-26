@@ -10,6 +10,8 @@ private struct SheetSection: Hashable {
     var url: String?
     var view: Int
     var simplified = false
+    /// When its page does not exist, show the main sheet instead.
+    var fallback = false
 }
 
 private enum Panel { case none, key, text, more }
@@ -77,12 +79,17 @@ struct SongView: View {
         let isBass = { (v: Version) in v.label.lowercased().contains("baixo") || v.url.contains("baixo") || v.url.contains("bass") }
         let bass = settings.instrument == "bass"
         if bass {
-            for (i, v) in m.versions.filter(isBass).enumerated() {
-                out.append(SheetSection(label: i == 0 ? "Baixo" : v.label, url: v.url, view: 0))
+            let listed = m.versions.filter(isBass)
+            if !listed.isEmpty {
+                for (i, v) in listed.enumerated() {
+                    out.append(SheetSection(label: i == 0 ? "Baixo" : v.label, url: v.url, view: 0, fallback: true))
+                }
+            } else if m.url.hasPrefix(siteURL) {
+                out.append(SheetSection(label: "Baixo", url: Source.bassURL(m.url), view: 0, fallback: true))
             }
         }
         let simp = m.versions.first { $0.label.lowercased().contains("simplif") || $0.url.contains("simplificada") }
-        out.append(SheetSection(label: "Simplificada", url: simp?.url ?? (m.url.hasPrefix(siteURL) ? Source.simplifiedURL(m.url) : nil), view: 0, simplified: true))
+        out.append(SheetSection(label: "Simplificada", url: simp?.url ?? (m.url.hasPrefix(siteURL) ? Source.simplifiedURL(m.url) : nil), view: 0, simplified: true, fallback: true))
         if let f = flags {
             if f.hasTabs && f.hasChords { out.append(SheetSection(label: "Acordes", url: m.url, view: 1)) }
             if f.hasSolos { out.append(SheetSection(label: "Solos", url: m.url, view: 2)) }
@@ -97,7 +104,7 @@ struct SongView: View {
     private var section: SheetSection? { sections.indices.contains(selected) ? sections[selected] : sections.first }
 
     private var derived: Bool {
-        guard let s = section, s.simplified else { return false }
+        guard let s = section, s.fallback else { return false }
         return s.url == nil || failed.contains(s.url ?? "")
     }
 
@@ -110,7 +117,7 @@ struct SongView: View {
     private var capo: Int { max(0, prefs.capo) }
 
     private var renderKey: String {
-        "\(source?.url ?? "")|\(source?.text.count ?? 0)|\(prefs.transpose - capo)|\(prefs.simplify || derived)|\(section?.view ?? 0)|\(settings.showTabs)|\(settings.accidentals)|\(cols)"
+        "\(source?.url ?? "")|\(source?.text.count ?? 0)|\(prefs.transpose - capo)|\(prefs.simplify || (derived && section?.simplified == true))|\(section?.view ?? 0)|\(section?.label ?? "")|\(derived)|\(settings.showTabs)|\(settings.accidentals)|\(cols)"
     }
 
     // MARK: body
@@ -193,6 +200,10 @@ struct SongView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         infoLine.id(-3)
+                        if settings.instrument == "bass" && (!sections.contains(where: { $0.label == "Baixo" }) || (section?.label == "Baixo" && derived)) {
+                            Text("Esta cifra não tem versão para baixo no site. Mostrando a cifra com diagramas de baixo.")
+                                .font(.caption).foregroundColor(t.muted).padding(.top, 4)
+                        }
                         if settings.showDiagrams && !rendered.chords.isEmpty && (section?.view ?? 0) < 2 {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 14) {
@@ -500,7 +511,7 @@ struct SongView: View {
     private func render() async {
         guard let s = source else { return }
         let (text, key) = (s.text, s.key)
-        let (tr, simp, view, tabs, acc, c) = (prefs.transpose - capo, prefs.simplify || derived, section?.view ?? 0, settings.showTabs, settings.accidentals, cols)
+        let (tr, simp, view, tabs, acc, c) = (prefs.transpose - capo, prefs.simplify || (derived && section?.simplified == true), section?.view ?? 0, settings.showTabs || (section?.label == "Baixo" && !derived), settings.accidentals, cols)
         let r = await Task.detached {
             Rendered.parse(Core.render(text, key: key, transpose: tr, simplify: simp, view: view, showTabs: tabs, accidentals: acc, cols: c))
         }.value

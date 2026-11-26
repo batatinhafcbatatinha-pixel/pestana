@@ -366,16 +366,107 @@ fn classify(lines: &[String]) -> Vec<Item> {
     items
 }
 
-/// "[Tab - Intro]" -> "[Intro]" once the tablature is hidden.
-fn untab_label(label: &str) -> String {
-    let inner = label.trim().trim_start_matches('[').trim_end_matches(']');
-    let low = inner.to_lowercase();
-    for p in ["tab - ", "tab -", "tab: ", "tab:", "tab "] {
-        if low.starts_with(p) && inner.len() > p.len() {
-            return format!("[{}]", inner[p.len()..].trim());
+/// What goes away when tablature is hidden:
+/// - whole "[Tab - ...]" sections (Cifra Club repeats the song's parts there);
+/// - every tab block, with what is glued to it (no blank line between): the
+///   chord line above it and annotations such as "pm . . .", "let ring";
+/// - short "(Guitarra 1)" / "(variação)" labels right before a tab;
+/// - section headers left with nothing but tablature.
+fn tab_material(items: &[Item]) -> Vec<bool> {
+    let n = items.len();
+    let mut drop = vec![false; n];
+    let header_label = |it: &Item| -> Option<String> {
+        match it {
+            Item::Header(h) => Some(h.clone()),
+            Item::Chords(segs, _) if segs.first().is_some_and(|s| s.style == ST_HEADER) => Some(segs[0].text.clone()),
+            _ => None,
+        }
+    };
+    let is_tab_label = |l: &str| {
+        let l = l.trim().trim_start_matches('[').to_lowercase();
+        l.starts_with("tab ") || l.starts_with("tab-") || l.starts_with("tab:") || l == "tab]" || l.starts_with("tablatura")
+    };
+
+    // "[Tab - ...]" sections, up to the next header.
+    let mut i = 0;
+    while i < n {
+        if header_label(&items[i]).is_some_and(|l| is_tab_label(&l)) {
+            drop[i] = true;
+            let mut j = i + 1;
+            while j < n && header_label(&items[j]).is_none() {
+                drop[j] = true;
+                j += 1;
+            }
+            i = j;
+        } else {
+            i += 1;
         }
     }
-    label.to_string()
+
+    // Tab blocks and what is glued to them.
+    let glued = |it: &Item| matches!(it, Item::Text(_) | Item::TabNote(_) | Item::Chords(_, None) | Item::Tab(..));
+    for i in 0..n {
+        if !matches!(items[i], Item::Tab(..) | Item::TabNote(_)) {
+            continue;
+        }
+        drop[i] = true;
+        let mut j = i;
+        while j > 0 && glued(&items[j - 1]) && header_label(&items[j - 1]).is_none() {
+            j -= 1;
+            drop[j] = true;
+        }
+        let mut j = i + 1;
+        while j < n && glued(&items[j]) && header_label(&items[j]).is_none() {
+            drop[j] = true;
+            j += 1;
+        }
+    }
+
+    // Short "(...)" labels whose next content is dropped tablature.
+    for i in (0..n).rev() {
+        if let Item::Text(t) = &items[i] {
+            let t = t.trim();
+            if t.starts_with('(') && t.ends_with(')') && t.chars().count() <= 32 {
+                let next = (i + 1..n).find(|&k| !matches!(items[k], Item::Blank));
+                if next.is_some_and(|k| drop[k]) {
+                    drop[i] = true;
+                }
+            }
+        }
+    }
+
+    // Headers left with nothing but dropped material.
+    for i in 0..n {
+        if drop[i] || header_label(&items[i]).is_none() {
+            continue;
+        }
+        let mut j = i + 1;
+        let mut any_kept = false;
+        let mut any_dropped = false;
+        while j < n && header_label(&items[j]).is_none() {
+            if drop[j] {
+                any_dropped = true;
+            } else if !matches!(items[j], Item::Blank) {
+                any_kept = true;
+                break;
+            }
+            j += 1;
+        }
+        // An instrumental label ("[Solo]", "[Riff 2]") whose first content is
+        // tablature names that tab, even when lyrics follow without a header.
+        let first = (i + 1..n).find(|&k| !matches!(items[k], Item::Blank));
+        let instrumental = header_label(&items[i]).is_some_and(|l| {
+            let l = l.to_lowercase();
+            ["solo", "riff", "dedilhado", "base", "tab", "interlúdio", "interludio"].iter().any(|w| l.contains(w))
+        });
+        // Header-with-chords lines ("[Intro] Am F") carry content themselves.
+        if matches!(items[i], Item::Header(_))
+            && ((any_dropped && !any_kept) || (instrumental && first.is_some_and(|k| drop[k])))
+        {
+            drop[i] = true;
+        }
+    }
+    drop
 }
 
 /// Keep only what the view asks for.
@@ -383,55 +474,11 @@ fn filter(items: Vec<Item>, view: View, show_tabs: bool) -> Vec<Item> {
     let keep_tabs = show_tabs && view != View::Chords;
     match view {
         View::Full | View::Chords => {
-            let mut out: Vec<Item> = Vec::with_capacity(items.len());
-            // Drop headers whose whole section was tablature, when tabs are hidden.
-            let mut idx = 0;
-            while idx < items.len() {
-                let it = &items[idx];
-                match it {
-                    Item::Tab(..) | Item::TabNote(_) if !keep_tabs => {
-                        // The gap after a hidden tab block goes with it, so the
-                        // chord lines that framed the tab sit together.
-                        let mut j = idx + 1;
-                        while j < items.len() && matches!(items[j], Item::Blank) {
-                            j += 1;
-                        }
-                        let next_is_header = match items.get(j) {
-                            Some(Item::Header(_)) => true,
-                            Some(Item::Chords(segs, _)) => segs.first().is_some_and(|s| s.style == ST_HEADER),
-                            _ => false,
-                        };
-                        // Keep one blank before the next section; drop it inside a section.
-                        if !next_is_header {
-                            idx = j - 1;
-                        }
-                    }
-                    Item::Chords(segs, lyric) if !keep_tabs && segs.first().is_some_and(|s| s.style == ST_HEADER) => {
-                        let mut segs = segs.clone();
-                        segs[0].text = untab_label(&segs[0].text);
-                        out.push(Item::Chords(segs, lyric.clone()));
-                    }
-                    Item::Header(_) if !keep_tabs => {
-                        // A header whose first content is tablature ("[Solo]" + tab)
-                        // labels that tab: it goes away with it.
-                        let mut j = idx + 1;
-                        while j < items.len() && matches!(items[j], Item::Blank) {
-                            j += 1;
-                        }
-                        let labels_tab = matches!(items.get(j), Some(Item::Tab(..)) | Some(Item::TabNote(_)));
-                        if labels_tab {
-                            // Skip the blanks between the header and its tab too.
-                            idx = j - 1;
-                        } else {
-                            if let Item::Header(h) = it {
-                                out.push(Item::Header(untab_label(h)));
-                            }
-                        }
-                    }
-                    _ => out.push(it.clone()),
-                }
-                idx += 1;
+            if keep_tabs {
+                return collapse_blanks(items);
             }
+            let drop = tab_material(&items);
+            let out: Vec<Item> = items.into_iter().zip(drop).filter(|(_, d)| !d).map(|(i, _)| i).collect();
             collapse_blanks(out)
         }
         View::Solos | View::Riffs => {
@@ -637,7 +684,7 @@ fn tab_spans(line: &str) -> Vec<(u8, String)> {
         _ => lead,
     };
     let mut out: Vec<(u8, String)> = Vec::new();
-    let mut push = |style: u8, c: char, out: &mut Vec<(u8, String)>| match out.last_mut() {
+    let push = |style: u8, c: char, out: &mut Vec<(u8, String)>| match out.last_mut() {
         Some((st, text)) if *st == style => text.push(c),
         _ => out.push((style, c.to_string())),
     };
@@ -974,44 +1021,140 @@ C            G
         assert_eq!(spans[0], (ST_TAB, "Eb|-".to_string()));
     }
 
-    #[test]
-    fn hidden_tabs_leave_no_gaps() {
-        let text = "[Tab - Intro]
+    /// Visible text of each rendered line ("" for blanks).
+    fn plain_lines(json: &str) -> Vec<String> {
+        let lines = &json[json.find("\"lines\":[").unwrap() + 9..json.len() - 2];
+        lines
+            .split("],[")
+            .map(|l| {
+                l.trim_matches(|c| c == '[' || c == ']')
+                    .split(',')
+                    .filter(|p| p.starts_with('"'))
+                    .map(|p| p.trim_matches('"'))
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect()
+    }
 
-   Am        F
-E|--5--3--|
-B|--5--3--|
+    // Shaped like Cifra Club's Californication (as seen in the app).
+    const CALIFORNICATION: &str = r#"[Intro] Am  F  Am  F
+        Am  F  Am  F
 
-   C    G
-E|--8--7--|
-B|--8--7--|
+[Tab - Intro]
+
+   Am           F
+E|-----------------|
+B|---1-----1-------|
+G|-----2-----2-----|
 
 [Primeira Parte]
-";
-        let r = render(text, "", Options { show_tabs: false, ..Default::default() });
-        assert!(r.json.contains("[Intro]") && !r.json.contains("Tab - "), "{}", r.json);
-        // Intro header, blank, Am F, C G (no blank between them), blank, Primeira Parte.
-        let lines = &r.json[r.json.find("\"lines\"").unwrap()..];
-        let kinds: Vec<&str> = lines.split("],[").collect();
-        let am = kinds.iter().position(|k| k.contains("\"Am\"")).unwrap();
-        assert!(kinds[am + 1].contains("\"C\""), "{}", r.json);
-        assert!(kinds[am + 2].starts_with('6'), "blank before next section: {}", r.json);
 
-        // A solo in the middle: its header and tab go away without leaving a hole.
-        let mid = "C   G
-Letra um
+   Am           F
+E|-----------------|
+B|---1-----1-------|
+
+   C        G        F        Dm
+E|-----------------|
+B|---1-----3-------|
+
+   Am           F
+E|-----------------|
+B|---1-----1-------|
+
+  Am
+Psychic spies from China
+          F
+Try to steal your mind's elation
+"#;
+
+    // Shaped like Cifra Club's The Trooper: guitar labels, palm-mute lines,
+    // a "[Tab - Primeira Parte]" section before the real one.
+    const TROOPER: &str = r#"[Intro] E5  C5  E5
+
+[Tab - Intro]
+
+(Guitarra 1)
+
+E|--------------------------|
+A|-7-7-7p5---5-5-5p3---3-3--|
+  pm . . .   . . .
+
+(Guitarra 2)
+
+E|--------------------------|
+A|-7-7-7p5---5-5-5p3---3-3--|
+
+        E5
+E|--------------------------|
+A|-7-7-7p5---5-5-5p3---3-3--|
+  pm . . .   . . .
+(variação)
+
+[Tab - Primeira Parte]
+
+        E5           E5          C5
+E|--------------------------|
+A|-7-7-7---5-5-5---3-3-3----|
+
+[Primeira Parte]
+
+E5
+   You'll take my life but I'll take yours too
 
 [Solo]
 
-E|--5--3--|
-B|--5--3--|
+(Guitarra 1)
 
-Am  F
-Letra dois
-";
+E|--12b14r12--10-12~--|
+B|--------------------|
+
+[Refrão]
+
+D5
+   Oooh oooh oooh
+"#;
+
+    #[test]
+    fn hidden_tabs_californication() {
+        let r = render(CALIFORNICATION, "", Options { show_tabs: false, cols: 80, ..Default::default() });
+        let l = plain_lines(&r.json);
+        let joined = l.join("\n");
+        assert!(!joined.contains("Tab"), "{joined}");
+        assert!(!joined.contains("C        G"), "chord lines above tabs go: {joined}");
+        // Exactly: intro line (2 rows), blank, Primeira Parte, blank, the verse.
+        assert_eq!(l[0].trim_start(), "[Intro] Am  F  Am  F", "{joined}");
+        assert_eq!(l[2], "", "{joined}");
+        assert_eq!(l[3], "[Primeira Parte]", "{joined}");
+        assert_eq!(l[4], "", "{joined}");
+        assert_eq!(l[5].trim(), "Am", "{joined}");
+        assert_eq!(l[6], "Psychic spies from China", "{joined}");
+        assert!(!joined.contains("\n\n\n"), "no double gaps: {joined}");
+    }
+
+    #[test]
+    fn hidden_tabs_trooper() {
+        let r = render(TROOPER, "", Options { show_tabs: false, cols: 80, ..Default::default() });
+        let l = plain_lines(&r.json);
+        let joined = l.join("\n");
+        for gone in ["Guitarra", "pm", "variação", "Tab", "[Solo]", "7p5"] {
+            assert!(!joined.contains(gone), "{gone} should be hidden: {joined}");
+        }
+        assert_eq!(joined.matches("[Primeira Parte]").count(), 1, "{joined}");
+        assert!(joined.contains("You'll take my life") && joined.contains("[Refrão]"), "{joined}");
+        assert!(!joined.contains("\n\n\n"), "no double gaps: {joined}");
+        // With tabs shown, everything is still there.
+        let r = render(TROOPER, "", Options { cols: 80, ..Default::default() });
+        assert!(r.json.contains("Guitarra") && r.json.contains("pm") && r.json.contains("[Tab - Intro]"));
+    }
+
+    #[test]
+    fn hidden_tabs_mid_song_solo() {
+        let mid = "C   G\nLetra um\n\n[Solo]\n\nE|--5--3--|\nB|--5--3--|\n\nAm  F\nLetra dois\n";
         let r = render(mid, "", Options { show_tabs: false, ..Default::default() });
-        assert!(!r.json.contains("[Solo]"), "{}", r.json);
-        assert!(!r.json.contains("[6],[6]"), "{}", r.json);
+        let joined = plain_lines(&r.json).join("\n");
+        assert!(!joined.contains("[Solo]"), "{joined}");
+        assert_eq!(joined, "C   G\nLetra um\n\nAm  F\nLetra dois", "{joined}");
     }
 
     #[test]

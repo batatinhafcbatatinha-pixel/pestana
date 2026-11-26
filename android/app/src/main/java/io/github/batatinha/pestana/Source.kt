@@ -198,6 +198,9 @@ object Source {
     /** A page with a chord sheet: a <pre> block, or Ultimate Guitar's embedded store. */
     fun hasSheet(body: String) = body.contains("<pre", true) || body.contains("wiki_tab")
 
+    /** Cifra Club keeps the bass version at <song>/tabs-baixo/. */
+    fun bassUrl(songUrl: String) = songUrl.trimEnd('/') + "/tabs-baixo/"
+
     fun simplifiedUrl(songUrl: String) = songUrl.trimEnd('/') + "/simplificada.html"
 }
 

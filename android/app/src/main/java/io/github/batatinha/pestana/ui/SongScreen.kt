@@ -95,7 +95,17 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private class Section(val label: String, val url: String?, val view: Int, val simplified: Boolean = false)
+/**
+ * A tab of the reader. `fallback`: when its page does not exist, show the main
+ * sheet instead (simplified ones then simplify the chords themselves).
+ */
+private class Section(
+    val label: String,
+    val url: String?,
+    val view: Int,
+    val simplified: Boolean = false,
+    val fallback: Boolean = simplified,
+)
 
 private enum class Panel { NONE, KEY, TEXT, MORE }
 
@@ -175,7 +185,14 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
         buildList {
             add(Section("Principal", m.url, 0))
             // Bass players see the bass version right away.
-            if (bass) m.versions.filter(isBass).forEachIndexed { i, v -> add(Section(if (i == 0) "Baixo" else v.label, v.url, 0)) }
+            if (bass) {
+                val listed = m.versions.filter(isBass)
+                if (listed.isNotEmpty()) {
+                    listed.forEachIndexed { i, v -> add(Section(if (i == 0) "Baixo" else v.label, v.url, 0, fallback = true)) }
+                } else if (m.url.startsWith(Source.SITE)) {
+                    add(Section("Baixo", Source.bassUrl(m.url), 0, fallback = true))
+                }
+            }
             val simp = m.versions.firstOrNull { it.label.contains("simplif", true) || it.url.contains("simplificada") }
             val simpUrl = simp?.url ?: if (m.url.startsWith(Source.SITE)) Source.simplifiedUrl(m.url) else null
             add(Section("Simplificada", simpUrl, 0, simplified = true))
@@ -209,13 +226,13 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     }
 
     val m = main
-    val derived = sec != null && sec.simplified && (sec.url == null || failed.containsKey(sec.url))
+    val derived = sec != null && sec.fallback && (sec.url == null || failed.containsKey(sec.url))
     val source: Sheet? = when {
         m == null || sec == null -> null
         derived || sec.url == m.url -> m
         else -> extra[sec.url]
     }
-    val simplify = prefs.simplify || derived
+    val simplify = prefs.simplify || (derived && sec?.simplified == true)
     val capo = prefs.capo.coerceAtLeast(0)
     val shapeShift = prefs.transpose - capo
 
@@ -225,11 +242,11 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     val charW = remember(settings.fontSize) { measurer.measure("0".repeat(40), mono).size.width / 40f }
     var cols by remember { mutableStateOf(0) }
 
-    LaunchedEffect(source, shapeShift, simplify, sec?.view, settings.showTabs, settings.accidentals, cols) {
+    LaunchedEffect(source, shapeShift, simplify, sec?.view, sec?.label, derived, settings.showTabs, settings.accidentals, cols) {
         val s = source ?: return@LaunchedEffect
         if (cols <= 0) return@LaunchedEffect
         rendered = withContext(Dispatchers.Default) {
-            Rendered.parse(Native.render(s.text, s.key, shapeShift, simplify, sec?.view ?: 0, settings.showTabs, settings.accidentals, cols))
+            Rendered.parse(Native.render(s.text, s.key, shapeShift, simplify, sec?.view ?: 0, settings.showTabs || (sec?.label == "Baixo" && !derived), settings.accidentals, cols))
         }
     }
 
@@ -347,6 +364,13 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                     ) {
                         Spacer(Modifier.height(10.dp))
                         InfoLine(m, rendered, prefs, capo) { chrome = true; panel = Panel.KEY }
+                        val bassSec = sections.firstOrNull { it.label == "Baixo" }
+                        if (bass && (bassSec == null || (sec == bassSec && derived))) {
+                            Text(
+                                "Esta cifra não tem versão para baixo no site. Mostrando a cifra com diagramas de baixo.",
+                                color = t.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
                         val r = rendered
                         if (settings.showDiagrams && r != null && r.chords.isNotEmpty() && sec?.view != 2 && sec?.view != 3) {
                             Row(
