@@ -109,6 +109,112 @@ fn chars(s: &str) -> Vec<char> {
 }
 
 fn normalize(text: &str) -> Vec<String> {
+    let mut lines = clean_lines(text);
+    rejoin_wrapped_tabs(&mut lines);
+    lines.into_iter().map(|l| l.trim_end().to_string()).collect()
+}
+
+/// Cifra Club's phone pages arrive with wide tablature already cut in two:
+/// after a line holding a single space, the string names come again with the
+/// rest of each string ("E|------|"), or with only what was written after the
+/// staff ("G| (3x)"). The staff is put back together here, since the app wraps
+/// tablature itself, to the real width of the screen.
+fn rejoin_wrapped_tabs(lines: &mut Vec<String>) {
+    let mut i = 0;
+    while i < lines.len() {
+        if !is_tab_line(&lines[i]) {
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while end < lines.len() && is_tab_line(&lines[end]) {
+            end += 1;
+        }
+        while end - i >= 2 && rejoin_next_part(lines, i, end) {}
+        i = end;
+    }
+}
+
+/// Joins the part that follows the tab rows `start..end`, if there is one.
+fn rejoin_next_part(lines: &mut Vec<String>, start: usize, end: usize) -> bool {
+    let n = end - start;
+    let rows: Vec<Vec<char>> = lines[start..end].iter().map(|l| chars(l)).collect();
+    let prefixes: Vec<usize> = rows.iter().map(|r| tab_prefix(r)).collect();
+    if prefixes.contains(&0) {
+        return false;
+    }
+    let p0 = prefixes[0];
+    let blank = |l: &str| l.trim().is_empty();
+
+    // Marks under the first part ("pm . . ."), then the separator.
+    let mut sep = end;
+    while sep < lines.len() && sep - end < 3 && !blank(&lines[sep]) && is_tab_mark(&lines[sep]) {
+        sep += 1;
+    }
+    let under = sep - end;
+    if sep >= lines.len() || lines[sep].is_empty() || !blank(&lines[sep]) {
+        return false;
+    }
+
+    // The next part: what is drawn over it, then one row per string, each
+    // starting with the same string name.
+    let continues = |k: usize, line: &str| {
+        let c = chars(line);
+        let p = prefixes[k];
+        c.len() >= p && c[..p] == rows[k][..p] && c[p..].iter().all(|ch| TAB_CHARS.contains(*ch))
+    };
+    let mut first = sep + 1;
+    while first < lines.len() && !continues(0, &lines[first]) {
+        let c = chars(&lines[first]);
+        if first - sep > 3 || blank(&lines[first]) || is_tab_line(&lines[first]) || c.iter().take(p0).any(|x| *x != ' ') {
+            return false;
+        }
+        first += 1;
+    }
+    let over = first - sep - 1;
+    if first + n > lines.len() || !(0..n).all(|k| continues(k, &lines[first + k])) {
+        return false;
+    }
+    // A staff that was closed ("---|") only continues with what was written
+    // after it; another staff under it is a new block.
+    let closed = rows.iter().any(|r| r.iter().rev().find(|c| **c != ' ') == Some(&'|'));
+    let more_staff = (0..n).any(|k| chars(&lines[first + k]).iter().skip(prefixes[k]).any(|c| *c == '-'));
+    if closed && more_staff {
+        return false;
+    }
+    // Lines over the next part continue the ones over this part.
+    if over > start || (start - over..start).any(|k| blank(&lines[k]) || is_tab_line(&lines[k])) {
+        return false;
+    }
+
+    let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let join = |head: &str, tail: &str, skip: usize| -> String {
+        let mut v = chars(head);
+        v.extend(std::iter::repeat(' ').take(width.saturating_sub(v.len())));
+        v.extend(tail.chars().skip(skip));
+        v.into_iter().collect()
+    };
+    for j in 0..over {
+        lines[start - over + j] = join(&lines[start - over + j], &lines[sep + 1 + j], p0);
+    }
+    for k in 0..n {
+        lines[start + k] = join(&lines[start + k], &lines[first + k], prefixes[k]);
+    }
+    let mut last = first + n;
+    for j in 0..under {
+        if last >= lines.len() || blank(&lines[last]) || !is_tab_mark(&lines[last]) {
+            break;
+        }
+        lines[end + j] = join(&lines[end + j], &lines[last], p0);
+        last += 1;
+    }
+    lines.drain(sep..last);
+    true
+}
+
+/// Lines of the sheet with tabs expanded and odd characters sorted out; the
+/// spaces at the end of each line are still there.
+fn clean_lines(text: &str) -> Vec<String> {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .split('\n')
@@ -143,7 +249,7 @@ fn normalize(text: &str) -> Vec<String> {
                     c => out.push(c),
                 }
             }
-            out.trim_end().to_string()
+            out
         })
         .collect()
 }
@@ -450,13 +556,20 @@ fn tab_material(items: &[Item]) -> Vec<bool> {
         l.starts_with("tab ") || l.starts_with("tab-") || l.starts_with("tab:") || l == "tab]" || l.starts_with("tablatura")
     };
 
-    // "[Tab - ...]" sections, up to the next header.
+    // "[Tab - ...]" sections, up to the next header, or up to the lyrics when
+    // the part's verses come right under its tablature, with no header between.
+    // Sung lines: chords over words, not over marks ("pm . . .") or over a
+    // remark that sits on a tab block.
+    let sung = |j: usize| {
+        matches!(&items[j], Item::Chords(_, Some(l)) if !is_tab_mark(l))
+            && !items[j + 1..].iter().take_while(|it| !matches!(it, Item::Blank)).any(|it| matches!(it, Item::Tab(..)))
+    };
     let mut i = 0;
     while i < n {
         if header_label(&items[i]).is_some_and(|l| is_tab_label(&l)) {
             drop[i] = true;
             let mut j = i + 1;
-            while j < n && header_label(&items[j]).is_none() {
+            while j < n && header_label(&items[j]).is_none() && !sung(j) {
                 drop[j] = true;
                 j += 1;
             }
@@ -498,15 +611,21 @@ fn tab_material(items: &[Item]) -> Vec<bool> {
         }
     }
 
-    // Headers left with nothing but dropped material.
-    for i in 0..n {
-        if drop[i] || header_label(&items[i]).is_none() {
-            continue;
-        }
+    // Headers left with nothing but dropped material. A part's own tablature
+    // section ("[Intro]" then "[Tab - Intro]") counts as that part's content.
+    // Later headers are settled first, so a chain of them falls together.
+    let name = |l: &str| l.trim().trim_matches(|c| c == '[' || c == ']' || c == ':').trim().to_lowercase();
+    for i in (0..n).rev() {
+        let Some(own) = header_label(&items[i]).filter(|_| !drop[i]).map(|l| name(&l)) else { continue };
         let mut j = i + 1;
         let mut any_kept = false;
         let mut any_dropped = false;
-        while j < n && header_label(&items[j]).is_none() {
+        while j < n {
+            if let Some(l) = header_label(&items[j]) {
+                if !(drop[j] && !own.is_empty() && name(&l).contains(&own)) {
+                    break;
+                }
+            }
             if drop[j] {
                 any_dropped = true;
             } else if !matches!(items[j], Item::Blank) {
@@ -1470,6 +1589,79 @@ D5
         let joined = plain_lines(&r.json).join("\n");
         assert!(!joined.contains("[Solo]"), "{joined}");
         assert_eq!(joined, "C   G\nLetra um\n\nAm  F\nLetra dois", "{joined}");
+    }
+
+    // Cifra Club's phone pages: a wide staff arrives cut in two, the second
+    // part after a line with one space, string names repeated.
+    #[test]
+    fn staff_cut_by_the_site_is_put_back_together() {
+        // Only "(3x)" was left over for the second part.
+        let t = "Ponte:\n\n   Bm       G\nE|-----7--x-----7---| \nG|-----7--x-6-6-----| \nA|-9-9------9-9--5--| \n \nE|      \nG| (3x) \nA|      \n\nBm      G\n   Who knew the other side of you?\n";
+        let l = plain_lines(&render(t, "", Options { cols: 80, ..Default::default() }).json);
+        assert!(l.contains(&"G|-----7--x-6-6-----|  (3x)".to_string()), "{l:?}");
+        assert_eq!(l.iter().filter(|x| x.starts_with("E|")).count(), 1, "{l:?}");
+        let l = plain_lines(&render(t, "", Options { show_tabs: false, ..Default::default() }).json);
+        assert_eq!(l.join("\n"), "Ponte:\n\nBm      G\n   Who knew the other side of you?", "{l:?}");
+
+        // Notes on both sides, and a remark over the staff cut with it.
+        let t = "  1st Ending         2\ne|10--10---|---------\nB|11--11---|---------\n \n  nd Ending\ne|------12--| \nB|--11------| \n";
+        let l = plain_lines(&render(t, "", Options { cols: 80, ..Default::default() }).json);
+        assert_eq!(l, ["  1st Ending         2nd Ending", "e|10--10---|---------------12--|", "B|11--11---|-----------11------|"], "{l:?}");
+
+        // Two blocks that are each complete stay two blocks.
+        let t = "E|--1--2--3--|\nB|--1--2--3--|\n \nE|--5--6--7--|\nB|--5--6--7--|\n";
+        let l = plain_lines(&render(t, "", Options { cols: 80, ..Default::default() }).json);
+        assert_eq!(l.len(), 5, "{l:?}");
+    }
+
+    // Shaped like Cifra Club's Little Wing: the verses come under the part's
+    // "[Tab - ...]" section, with no header of their own.
+    #[test]
+    fn hidden_tabs_keep_lyrics_written_under_a_tab_section() {
+        let t = "[Intro] Em  G
+
+[Tab - Intro]
+
+Parte 1 de 1
+   Em
+E|-----------0-----|
+B|-------0-----0---|
+
+[Primeira Parte]
+
+[Tab - Primeira Parte]
+
+Parte 1 de 1
+   Em
+E|-----------0-----|
+B|-------0-----0---|
+
+        E5
+  pm . . .  . . .
+E|-----------0-----|
+B|-------0-----0---|
+
+             Em                   G
+Well she's walking through the clouds
+       Am
+With a circus mind
+
+[Segunda Parte]
+
+[Tab - Segunda Parte]
+
+   Em
+E|-----------0-----|
+B|-------0-----0---|
+
+[Solo] Em  G
+";
+        let l = plain_lines(&render(t, "", Options { show_tabs: false, cols: 80, ..Default::default() }).json);
+        assert_eq!(
+            l.join("\n"),
+            "[Intro] Em  G\n\n[Primeira Parte]\n\n             Em                   G\nWell she's walking through the clouds\n       Am\nWith a circus mind\n\n[Solo] Em  G",
+            "{l:?}"
+        );
     }
 
     #[test]

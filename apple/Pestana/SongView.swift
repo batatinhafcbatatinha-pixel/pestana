@@ -10,7 +10,7 @@ private struct SheetSection: Hashable {
     var url: String?
     var view: Int
     var simplified = false
-    /// When its page does not exist, show the main sheet instead.
+    /// When its page cannot be loaded, show the main sheet instead.
     var fallback = false
 }
 
@@ -62,6 +62,8 @@ struct SongView: View {
     @State private var cols = 40
     @State private var auto = false
     @State private var panel: Panel = .none
+    /// The part of the options last looked at: the options button opens there again.
+    @State private var lastPanel: Panel = .key
     @State private var chordPopup: String?
     @State private var addToList = false
     @State private var visible = Set<Int>()
@@ -85,6 +87,11 @@ struct SongView: View {
         return bassMissing ? main : nil
     }
 
+    private static func isAcousticVersion(_ v: Version) -> Bool {
+        let l = v.label.lowercased()
+        return l.contains("acústic") || l.contains("acustic") || v.url.lowercased().contains("acustic")
+    }
+
     private static func isBassVersion(_ v: Version) -> Bool {
         v.label.lowercased().contains("baixo") || v.url.contains("baixo") || v.url.contains("bass")
     }
@@ -92,10 +99,11 @@ struct SongView: View {
     private var sections: [SheetSection] {
         guard let m = base else { return [] }
         var out = [SheetSection(label: "Principal", url: m.url, view: 0)]
-        let simp = m.versions.first { $0.label.lowercased().contains("simplif") || $0.url.contains("simplificada") }
-        out.append(SheetSection(label: "Simplificada", url: simp?.url ?? (m.url.hasPrefix(siteURL) ? Source.simplifiedURL(m.url) : nil), view: 0, simplified: true, fallback: true))
+        // Only when the song has one ("Simplificar acordes" covers the rest).
+        if let simp = m.versions.first(where: { $0.label.lowercased().contains("simplif") || $0.url.contains("simplificada") }) {
+            out.append(SheetSection(label: "Simplificada", url: simp.url, view: 0, simplified: true, fallback: true))
+        }
         if let f = flags {
-            if f.hasTabs && f.hasChords { out.append(SheetSection(label: "Acordes", url: m.url, view: 1)) }
             if f.hasSolos { out.append(SheetSection(label: "Solos", url: m.url, view: 2)) }
             if f.hasRiffs { out.append(SheetSection(label: "Riffs", url: m.url, view: 3)) }
         }
@@ -146,6 +154,13 @@ struct SongView: View {
                     .onChange(of: geo.size.width) { updateCols($0) }
                     .onChange(of: settings.fontSize) { _ in updateCols(geo.size.width) }
             }
+            // With the options open, a tap outside them only closes them: it must
+            // not reach the chords underneath.
+            .overlay {
+                if panel != .none {
+                    Color.clear.contentShape(Rectangle()).onTapGesture { withAnimation { panel = .none } }
+                }
+            }
             controls
         }
         .background(t.bg.ignoresSafeArea())
@@ -162,6 +177,7 @@ struct SongView: View {
         }
         .task(id: shown.id) { await load(force: false) }
         .task(id: "\(main?.url ?? "")|\(bass)") { await loadBass() }
+        .task(id: "\(main?.url ?? "")|\(main?.versions.count ?? 0)") { await findAcoustic() }
         .onChange(of: bass) { _ in selected = 0 }
         .task(id: base?.url) {
             guard let m = base else { return }
@@ -300,7 +316,7 @@ struct SongView: View {
         return Text(parts.joined(separator: "   ·   "))
             .font(.footnote).foregroundColor(t.muted)
             .padding(.top, 10)
-            .onTapGesture { panel = .key }
+            .onTapGesture { show(.key) }
     }
 
     @ViewBuilder
@@ -334,8 +350,23 @@ struct SongView: View {
 
     // MARK: controls
 
+    private func show(_ p: Panel) {
+        panel = p
+        lastPanel = p
+    }
+
     private var controls: some View {
         VStack(spacing: 0) {
+            // One menu of options, in three parts.
+            if panel != .none {
+                HStack(spacing: 8) {
+                    Pill(text: "Tom", selected: panel == .key) { show(.key) }
+                    Pill(text: "Texto", selected: panel == .text) { show(.text) }
+                    Pill(text: "Cifra", selected: panel == .more) { show(.more) }
+                    Spacer()
+                }
+                .padding(.horizontal, 16).padding(.top, 12)
+            }
             switch panel {
             case .key: keyPanel
             case .text: textPanel
@@ -354,17 +385,12 @@ struct SongView: View {
                 .help("Rolagem automática")
                 Slider(value: Binding(get: { Double(prefs.speed) }, set: { prefs.speed = Int($0) }), in: 1...40)
                 Text("\(prefs.speed)").font(.subheadline.bold()).foregroundColor(t.text).frame(minWidth: 24)
-                Button { panel = panel == .key ? .none : .key } label: {
-                    Text(rendered.key.isEmpty ? "Tom" : rendered.key).font(.headline).foregroundColor(t.chord)
-                        .padding(.horizontal, 12).frame(height: 36)
-                        .background(Capsule().fill(panel == .key ? t.surface2 : t.surface))
-                }.buttonStyle(.plain)
-                Button { panel = panel == .text ? .none : .text } label: {
-                    Image(systemName: "textformat.size").foregroundColor(panel == .text ? t.chord : t.text)
-                }.buttonStyle(.plain)
-                Button { panel = panel == .more ? .none : .more } label: {
-                    Image(systemName: "ellipsis").foregroundColor(panel == .more ? t.chord : t.text).frame(width: 28, height: 36)
-                }.buttonStyle(.plain)
+                Button { panel = panel == .none ? lastPanel : .none } label: {
+                    Image(systemName: panel == .none ? "ellipsis" : "xmark")
+                        .foregroundColor(panel == .none ? t.text : t.chord).frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .help("Opções da cifra")
             }
             .padding(.horizontal, 12).frame(height: 60)
         }
@@ -508,7 +534,7 @@ struct SongView: View {
         let url = m.versions.first(where: SongView.isBassVersion)?.url ?? (m.url.hasPrefix(siteURL) ? Source.bassURL(m.url) : nil)
         guard let url else { bassMissing = true; return }
         if let s = model.store.sheet(url) { bassSheet = s; return }
-        if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist) {
+        if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist, version: true) {
             model.store.saveSheet(s)
             bassSheet = s
         } else {
@@ -516,10 +542,28 @@ struct SongView: View {
         }
     }
 
+    /// Cifra Club does not link a song's acoustic version on its page: ask for
+    /// it once, and keep it with the song's other versions when it exists.
+    private func findAcoustic() async {
+        guard let m = main, m.url.hasPrefix(siteURL), !m.versions.contains(where: SongView.isAcousticVersion) else { return }
+        let url = Source.acousticURL(m.url)
+        var found = model.store.sheet(url)
+        if found == nil, let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist, version: true) {
+            model.store.saveSheet(s)
+            found = s
+        }
+        guard let s = found, main?.url == m.url else { return }
+        extra[url] = s
+        var known = m
+        known.versions.append(Version(label: "Acústica", url: url))
+        model.store.saveSheet(known)
+        main = known
+    }
+
     private func loadSection() async {
         guard let m = base, let url = section?.url, url != m.url, extra[url] == nil, !failed.contains(url) else { return }
         if let s = model.store.sheet(url) { extra[url] = s; return }
-        if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist) {
+        if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist, version: true) {
             model.store.saveSheet(s)
             extra[url] = s
         } else {

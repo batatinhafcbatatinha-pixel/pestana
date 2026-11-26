@@ -96,8 +96,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * A tab of the reader. `fallback`: when its page does not exist, show the main
- * sheet instead (simplified ones then simplify the chords themselves).
+ * A tab of the reader. `fallback`: when its page cannot be loaded, show the
+ * main sheet instead (simplified ones then simplify the chords themselves).
  */
 private class Section(
     val label: String,
@@ -148,6 +148,9 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     var rendered by remember(song.id) { mutableStateOf<Rendered?>(null) }
     var chrome by remember { mutableStateOf(true) }
     var panel by remember { mutableStateOf(Panel.NONE) }
+    // The part of the options last looked at: the options button opens there again.
+    var lastPanel by remember { mutableStateOf(Panel.KEY) }
+    androidx.activity.compose.BackHandler(enabled = panel != Panel.NONE) { panel = Panel.NONE }
     var auto by remember { mutableStateOf(false) }
     var chordPopup by remember { mutableStateOf<String?>(null) }
     var addToList by remember { mutableStateOf(false) }
@@ -174,7 +177,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     LaunchedEffect(song.id) { load(false) }
 
     // Bass mode reads Cifra Club's bass version (<song>/tabs-baixo/) as the base
-    // sheet: Principal, Simplificada, Acordes, Solos and Riffs all come from it.
+    // sheet: Principal, Simplificada, Solos and Riffs all come from it.
     val bass = settings.instrument == "bass"
     LaunchedEffect(main, bass) {
         val m = main ?: return@LaunchedEffect
@@ -185,9 +188,23 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
             bassMissing = true
             return@LaunchedEffect
         }
-        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist) }
+        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist, version = true) }
             .onSuccess { state.db.saveSheet(it) }.getOrNull()
         if (s != null) bassSheet = s else bassMissing = true
+    }
+
+    // Cifra Club does not link a song's acoustic version on its page: ask for
+    // it once, and keep it with the song's other versions when it exists.
+    LaunchedEffect(main) {
+        val m = main ?: return@LaunchedEffect
+        if (!m.url.startsWith(Source.SITE) || m.versions.any(::isAcousticVersion)) return@LaunchedEffect
+        val url = Source.acousticUrl(m.url)
+        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist, version = true) }
+            .onSuccess { state.db.saveSheet(it) }.getOrNull() ?: return@LaunchedEffect
+        extra[url] = s
+        val known = m.copy(versions = m.versions + io.github.batatinha.pestana.Version("Acústica", url))
+        state.db.saveSheet(known)
+        if (main === m) main = known
     }
     LaunchedEffect(bass) { selected = 0 }
     val usingBass = bass && bassSheet != null
@@ -209,10 +226,9 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
         val f = flags
         buildList {
             add(Section("Principal", m.url, 0))
+            // Only when the song has one ("Simplificar acordes" covers the rest).
             val simp = m.versions.firstOrNull { it.label.contains("simplif", true) || it.url.contains("simplificada") }
-            val simpUrl = simp?.url ?: if (m.url.startsWith(Source.SITE)) Source.simplifiedUrl(m.url) else null
-            add(Section("Simplificada", simpUrl, 0, simplified = true))
-            if (f != null && f.hasTabs && f.hasChords) add(Section("Acordes", m.url, 1))
+            if (simp != null) add(Section("Simplificada", simp.url, 0, simplified = true))
             if (f != null && f.hasSolos) add(Section("Solos", m.url, 2))
             if (f != null && f.hasRiffs) add(Section("Riffs", m.url, 3))
             m.versions.filter { v ->
@@ -228,7 +244,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
         val m = base ?: return@LaunchedEffect
         val url = sec?.url ?: return@LaunchedEffect
         if (url == m.url || extra.containsKey(url) || failed.containsKey(url)) return@LaunchedEffect
-        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist) }
+        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist, version = true) }
             .onSuccess { state.db.saveSheet(it) }.getOrNull()
         if (s != null) extra[url] = s else failed[url] = true
     }
@@ -409,6 +425,12 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
             }
         }
 
+        // With the options open, a tap outside them only closes them: it must
+        // not reach the chords underneath.
+        if (chrome && panel != Panel.NONE) {
+            Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures(onTap = { panel = Panel.NONE }) })
+        }
+
         // Bottom controls
         AnimatedVisibility(
             chrome, Modifier.align(Alignment.BottomCenter),
@@ -419,7 +441,8 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                 state, prefs, rendered, auto, panel,
                 onPrefs = { prefs = it },
                 onAuto = { auto = !auto; if (auto) panel = Panel.NONE },
-                onPanel = { panel = if (panel == it) Panel.NONE else it },
+                onPanel = { panel = it; if (it != Panel.NONE) lastPanel = it },
+                onOptions = { panel = if (panel == Panel.NONE) lastPanel else Panel.NONE },
                 onAddToList = { addToList = true },
                 onRefresh = {
                     refreshing = true
@@ -526,6 +549,7 @@ private fun Controls(
     onPrefs: (SongPrefs) -> Unit,
     onAuto: () -> Unit,
     onPanel: (Panel) -> Unit,
+    onOptions: () -> Unit,
     onAddToList: () -> Unit,
     onRefresh: () -> Unit,
     onOpenWeb: () -> Unit,
@@ -537,6 +561,14 @@ private fun Controls(
     val s = state.settings
     Surface(color = t.surface, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp), shadowElevation = 8.dp) {
         Column(Modifier.navigationBarsPadding()) {
+            // One menu of options, in three parts.
+            if (panel != Panel.NONE) {
+                Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pill("Tom", panel == Panel.KEY) { onPanel(Panel.KEY) }
+                    Pill("Texto", panel == Panel.TEXT) { onPanel(Panel.TEXT) }
+                    Pill("Cifra", panel == Panel.MORE) { onPanel(Panel.MORE) }
+                }
+            }
             when (panel) {
                 Panel.KEY -> Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                     Stepper("Tom", if (r == null) "" else shiftKey(r.origKey, prefs.transpose).ifEmpty { "${prefs.transpose}" },
@@ -615,22 +647,10 @@ private fun Controls(
                     modifier = Modifier.widthIn(min = 26.dp).padding(start = 4.dp),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
-                BarButton(r?.key?.ifEmpty { "Tom" } ?: "Tom", panel == Panel.KEY) { onPanel(Panel.KEY) }
-                IconButton(onClick = { onPanel(Panel.TEXT) }) { Icon(Ic.Text, "Texto e tema", tint = if (panel == Panel.TEXT) t.chord else t.text) }
-                IconButton(onClick = { onPanel(Panel.MORE) }) { Icon(Ic.More, "Mais opções", tint = if (panel == Panel.MORE) t.chord else t.text) }
+                IconButton(onClick = onOptions) { Icon(if (panel == Panel.NONE) Ic.More else Ic.Close, "Opções da cifra", tint = if (panel == Panel.NONE) t.text else t.chord) }
             }
         }
     }
-}
-
-@Composable
-private fun BarButton(label: String, active: Boolean, onClick: () -> Unit) {
-    val t = LocalReading.current
-    Box(
-        Modifier.height(36.dp).widthIn(min = 44.dp).clip(RoundedCornerShape(18.dp)).background(if (active) t.surface2 else t.surface)
-            .clickable(onClick = onClick).padding(horizontal = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) { Text(label, color = t.chord, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1) }
 }
 
 @Composable
@@ -672,6 +692,9 @@ private fun diagnostic(s: Sheet): String = buildString {
         if (odd) append("<U+").append(c.code.toString(16).uppercase().padStart(4, '0')).append('>') else append(c)
     }
 }
+
+private fun isAcousticVersion(v: io.github.batatinha.pestana.Version) =
+    v.label.contains("acústic", true) || v.label.contains("acustic", true) || v.url.contains("acustic", true)
 
 private fun isBassVersion(v: io.github.batatinha.pestana.Version) =
     v.label.contains("baixo", true) || v.url.contains("baixo", true) || v.url.contains("bass", true)

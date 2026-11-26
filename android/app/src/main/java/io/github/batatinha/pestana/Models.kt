@@ -8,7 +8,7 @@ data class SongRef(
     val id: String,
     val title: String,
     val artist: String,
-    val artistSlug: String = id.substringBefore('/'),
+    val artistSlug: String = artistOf(id),
     val album: String = "",
     val albumSlug: String = "",
 ) {
@@ -21,6 +21,13 @@ data class SongRef(
         }
 
     companion object {
+        /** The artist's address out of a song id; a version kept by its own link ("web/host/artist/song/x.html") has it too. */
+        fun artistOf(id: String): String {
+            if (!id.startsWith("web/")) return id.substringBefore('/')
+            val parts = id.split('/')
+            return if (parts.size == 5 && parts[1].endsWith("cifraclub.com.br") && parts[4].endsWith(".html")) parts[2] else ""
+        }
+
         /** A song imported from any chord page link. */
         fun fromLink(link: String, title: String, artist: String): SongRef {
             val u = link.substringAfter("://").substringBefore('#').substringBefore('?')
@@ -29,7 +36,9 @@ data class SongRef(
             return if (host.endsWith("cifraclub.com.br") && path.count { it == '/' } == 1) {
                 SongRef(path, title, artist)
             } else {
-                SongRef("web/$u", title, artist, artistSlug = "")
+                // One version of a song ("/artist/song/sjgsmzp.html") is kept as a song of its own, under its artist.
+                val ofArtist = host.endsWith("cifraclub.com.br") && path.count { it == '/' } == 2 && path.endsWith(".html")
+                SongRef("web/$u", title, artist, artistSlug = if (ofArtist) path.substringBefore('/') else "")
             }
         }
     }
@@ -37,7 +46,16 @@ data class SongRef(
 
 data class ArtistRef(val slug: String, val name: String, val img: String = "")
 
-data class AlbumRef(val slug: String, val name: String, val artist: String, val artistSlug: String, val year: String, val img: String = "") {
+data class AlbumRef(
+    val slug: String,
+    val name: String,
+    val artist: String,
+    val artistSlug: String,
+    val year: String,
+    val img: String = "",
+    /** "album" or "single" when the discography says which; "" otherwise. */
+    val kind: String = "",
+) {
     val key get() = "$artistSlug/$slug"
 }
 
@@ -67,10 +85,13 @@ data class Sheet(
         fun fromExtract(json: String, url: String, songId: String, fallbackTitle: String, fallbackArtist: String): Sheet {
             val o = JSONObject(json)
             val vs = o.optJSONArray("versions") ?: JSONArray()
+            // A version imported by its own link says which one it is: "I Miss You (Versão 7)".
+            val version = o.optString("version").takeIf { songId.startsWith("web/") && it.isNotBlank() }
+            val title = o.optString("title").ifBlank { fallbackTitle }
             return Sheet(
                 url = url,
                 songId = songId,
-                title = o.optString("title").ifBlank { fallbackTitle },
+                title = if (version != null && title.isNotBlank() && !title.endsWith("($version)")) "$title ($version)" else title,
                 artist = o.optString("artist").ifBlank { fallbackArtist },
                 key = o.optString("key"),
                 capo = o.optInt("capo"),

@@ -9,6 +9,7 @@ typedef struct PestanaDetector PestanaDetector;
 void pestana_free_string(char *s);
 char *pestana_extract_page(const char *html, const char *url);
 char *pestana_playlist_links(const char *html, const char *url);
+char *pestana_artist_page(const char *html, const char *url);
 char *pestana_render(const char *text, const char *key, int32_t transpose, bool simplify,
                      int32_t view, bool show_tabs, int32_t accidentals, int32_t cols);
 char *pestana_chord_shape(const char *name);

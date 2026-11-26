@@ -12,6 +12,9 @@ object Native {
     /** Playlist/profile page -> {title, songs:[{id,label}], playlists:[{url,label}]} */
     @JvmStatic external fun playlistLinks(html: String, url: String): String
 
+    /** Artist, discography or album page -> {name, songs:[{id,label}], albums:[{slug,name,year,kind}]} */
+    @JvmStatic external fun artistPage(html: String, url: String): String
+
     /** Chord sheet text -> rendered JSON (see core/src/sheet.rs). */
     @JvmStatic external fun render(
         text: String,

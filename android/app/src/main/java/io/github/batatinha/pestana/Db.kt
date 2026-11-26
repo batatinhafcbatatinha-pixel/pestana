@@ -12,7 +12,7 @@ import org.json.JSONObject
  * downloaded sheets (offline cache), favorites, playlists, per-song settings
  * and history. No account, no server.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 3) {
+class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -33,6 +33,12 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 3) {
         db.execSQL("CREATE TABLE recents(song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, ts INTEGER)")
         createImages(db)
         createAlbumSongs(db)
+        createSongInfo(db)
+    }
+
+    /** The album each song came out on, as the site's search tells it (playlist sorting). */
+    private fun createSongInfo(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS song_info(song_id TEXT PRIMARY KEY, album TEXT, album_slug TEXT, year INTEGER)")
     }
 
     /** Tracks of each favorite album, so their sheets are kept (and dropped with the album). */
@@ -51,6 +57,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 3) {
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createImages(db)
         if (oldVersion < 3) createAlbumSongs(db)
+        if (oldVersion < 4) createSongInfo(db)
     }
 
     fun allImages(): Map<String, String> = readableDatabase.rawQuery("SELECT key, url FROM images", null).use { c ->
@@ -270,7 +277,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 3) {
         writableDatabase.insertWithOnConflict("recents", null, ContentValues().apply {
             put("song_id", s.id); put("title", s.title); put("artist", s.artist); put("ts", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
-        writableDatabase.execSQL("DELETE FROM recents WHERE song_id NOT IN (SELECT song_id FROM recents ORDER BY ts DESC LIMIT 50)")
+        // Long enough a memory to sort a big playlist by when each song was last played.
+        writableDatabase.execSQL("DELETE FROM recents WHERE song_id NOT IN (SELECT song_id FROM recents ORDER BY ts DESC LIMIT 1000)")
         pruneCache()
     }
 
@@ -280,6 +288,24 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 3) {
 
     fun clearRecents() {
         writableDatabase.delete("recents", null, null)
+    }
+
+    /** When each song was last opened (milliseconds), for the ones still remembered. */
+    fun lastPlayed(): Map<String, Long> = readableDatabase.rawQuery("SELECT song_id, ts FROM recents", null).use { c ->
+        buildMap { while (c.moveToNext()) put(c.getString(0), c.getLong(1)) }
+    }
+
+    /** A song's album; all blank when the search was asked and knew none. */
+    class SongInfo(val album: String, val albumSlug: String, val year: Int)
+
+    fun songInfo(): Map<String, SongInfo> = readableDatabase.rawQuery("SELECT song_id, album, album_slug, year FROM song_info", null).use { c ->
+        buildMap { while (c.moveToNext()) put(c.getString(0), SongInfo(c.getString(1) ?: "", c.getString(2) ?: "", c.getInt(3))) }
+    }
+
+    fun saveSongInfo(songId: String, i: SongInfo) {
+        writableDatabase.insertWithOnConflict("song_info", null, ContentValues().apply {
+            put("song_id", songId); put("album", i.album); put("album_slug", i.albumSlug); put("year", i.year)
+        }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     // ---- backup ----

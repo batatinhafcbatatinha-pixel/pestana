@@ -161,12 +161,14 @@ struct Row: View {
 struct SongRowLink: View {
     var song: SongRef
     var queue: [SongRef] = []
+    /// What goes under the title instead of the artist.
+    var subtitle: String? = nil
 
     var body: some View {
         NavigationLink(value: Route.song(song, queue)) {
             HStack(spacing: 14) {
                 SongThumb(song: song)
-                Row(title: song.title, subtitle: song.artist)
+                Row(title: song.title, subtitle: subtitle ?? song.artist)
             }
         }
     }

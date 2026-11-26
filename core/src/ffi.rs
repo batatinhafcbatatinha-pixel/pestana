@@ -36,6 +36,11 @@ pub extern "C" fn pestana_playlist_links(html: *const c_char, url: *const c_char
 }
 
 #[no_mangle]
+pub extern "C" fn pestana_artist_page(html: *const c_char, url: *const c_char) -> *mut c_char {
+    give(crate::html::artist_page(&read(html), &read(url)))
+}
+
+#[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn pestana_render(
     text: *const c_char,

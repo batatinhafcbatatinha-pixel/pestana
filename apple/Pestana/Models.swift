@@ -10,7 +10,15 @@ struct SongRef: Hashable, Identifiable {
     var album: String = ""
     var albumSlug: String = ""
 
-    var artistSlug: String { isLocal || id.hasPrefix("web/") ? "" : String(id.split(separator: "/").first ?? "") }
+    var artistSlug: String {
+        if isLocal { return "" }
+        let parts = id.split(separator: "/").map(String.init)
+        if id.hasPrefix("web/") {
+            // One version kept by its own link: "web/host/artist/song/x.html".
+            return parts.count == 5 && parts[1].hasSuffix("cifraclub.com.br") && parts[4].hasSuffix(".html") ? parts[2] : ""
+        }
+        return parts.first ?? ""
+    }
     var isLocal: Bool { id.hasPrefix("local/") }
     var url: String {
         if isLocal { return "local:\(id)" }
@@ -45,6 +53,8 @@ struct AlbumRef: Hashable {
     var artistSlug: String
     var year: String
     var img: String = ""
+    /// "album" or "single" when the discography says which; "" otherwise.
+    var kind: String = ""
     var key: String { "\(artistSlug)/\(slug)" }
 }
 
@@ -78,9 +88,15 @@ struct Sheet {
             return Version(label: l, url: u)
         }
         func s(_ k: String) -> String { o[k] as? String ?? "" }
+        // A version imported by its own link says which one it is: "I Miss You (Versão 7)".
+        var name = s("title").isEmpty ? title : s("title")
+        let version = s("version")
+        if songId.hasPrefix("web/") && !version.isEmpty && !name.isEmpty && !name.hasSuffix("(\(version))") {
+            name += " (\(version))"
+        }
         return Sheet(
             url: url, songId: songId,
-            title: s("title").isEmpty ? title : s("title"),
+            title: name,
             artist: s("artist").isEmpty ? artist : s("artist"),
             key: s("key"), capo: o["capo"] as? Int ?? 0, tuning: s("tuning"), text: s("text"), versions: vs
         )

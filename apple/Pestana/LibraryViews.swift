@@ -7,6 +7,9 @@ struct LibraryView: View {
     @State private var tab = 0
     @State private var newList = false
     @State private var newName = ""
+    /// The playlist whose deletion is being confirmed (held, then "Apagar playlist").
+    @State private var deletingList: Playlist?
+    @StateObject private var favOrder = SongOrder(key: "favs", firstLabel: "Ordem padrão")
 
     private let tabs = ["Músicas", "Artistas", "Álbuns", "Playlists", "Minhas cifras"]
 
@@ -20,9 +23,17 @@ struct LibraryView: View {
             }.rowBackground(t)
             switch tab {
             case 0:
-                let songs = model.store.favs("song").map { SongRef(id: $0.id, title: $0.title, artist: $0.sub) }
-                if songs.isEmpty { EmptyStateView(title: "Nenhuma música favorita", message: "Toque no coração ao abrir uma cifra.").rowBackground(t) }
-                ForEach(songs) { SongRowLink(song: $0, queue: songs).rowBackground(t) }
+                let all = model.store.favs("song").map { SongRef(id: $0.id, title: $0.title, artist: $0.sub) }
+                let songs = favOrder.shown(all)
+                if all.isEmpty {
+                    EmptyStateView(title: "Nenhuma música favorita", message: "Toque no coração ao abrir uma cifra.").rowBackground(t)
+                } else {
+                    SongOrderBar(order: favOrder, songs: all).rowBackground(t)
+                    if songs.isEmpty {
+                        EmptyStateView(title: "Nenhuma música com esses filtros", message: "Os filtros olham as cifras salvas no aparelho.").rowBackground(t)
+                    }
+                }
+                ForEach(songs) { SongRowLink(song: $0, queue: songs, subtitle: favOrder.subtitle($0)).rowBackground(t) }
             case 1:
                 let artists = model.store.favs("artist")
                 if artists.isEmpty { EmptyStateView(title: "Nenhum artista favorito", message: "Favorite artistas pela busca.").rowBackground(t) }
@@ -52,7 +63,12 @@ struct LibraryView: View {
                             Thumb(text: p.name, symbol: "music.note.list", round: false)
                             Row(title: p.name, subtitle: p.count == 1 ? "1 música" : "\(p.count) músicas")
                         }
-                    }.rowBackground(t)
+                    }
+                    // Holding a playlist offers to delete it.
+                    .contextMenu {
+                        Button(role: .destructive) { deletingList = p } label: { Label("Apagar playlist", systemImage: "trash") }
+                    }
+                    .rowBackground(t)
                 }
             default:
                 let local = model.store.localSongs()
@@ -79,6 +95,16 @@ struct LibraryView: View {
             }
             Button("Cancelar", role: .cancel) {}
         }
+        .confirmationDialog(
+            "Apagar \"\(deletingList?.name ?? "")\"? As cifras continuam salvas.",
+            isPresented: Binding(get: { deletingList != nil }, set: { if !$0 { deletingList = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Apagar", role: .destructive) {
+                if let p = deletingList { model.store.deletePlaylist(p.id); model.changed() }
+                deletingList = nil
+            }
+        }
     }
 }
 
@@ -92,13 +118,23 @@ struct PlaylistView: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var deleting = false
+    @StateObject private var order: SongOrder
+
+    init(id: Int64, name: String) {
+        self.id = id
+        _name = State(initialValue: name)
+        _order = StateObject(wrappedValue: SongOrder(key: "playlist\(id)", firstLabel: "Ordem da lista"))
+    }
 
     var body: some View {
-        List {
+        let shown = order.shown(songs)
+        // Songs are moved up and down on the list as it was put together.
+        let untouched = order.untouched(songs)
+        return List {
             if !songs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        NavigationLink(value: Route.song(songs[0], songs)) {
+                        NavigationLink(value: Route.song(shown.first ?? songs[0], shown.isEmpty ? songs : shown)) {
                             Label("Tocar em sequência", systemImage: "play.fill").font(.subheadline.weight(.semibold))
                                 .padding(.horizontal, 14).padding(.vertical, 7)
                                 .background(Capsule().fill(t.chord)).foregroundColor(t.bg)
@@ -113,21 +149,26 @@ struct PlaylistView: View {
                         }
                     }
                 }.rowBackground(t)
+                SongOrderBar(order: order, songs: songs).rowBackground(t)
+                if shown.isEmpty {
+                    EmptyStateView(title: "Nenhuma música com esses filtros", message: "Os filtros olham as cifras salvas no aparelho.").rowBackground(t)
+                }
             } else {
                 EmptyStateView(title: "Playlist vazia", message: "Abra uma cifra e use ⋯ › Adicionar à playlist.").rowBackground(t)
             }
-            ForEach(songs) { s in
-                SongRowLink(song: s, queue: songs).rowBackground(t)
+            ForEach(shown) { s in
+                SongRowLink(song: s, queue: shown, subtitle: order.subtitle(s)).rowBackground(t)
             }
             .onDelete { idx in
-                for i in idx { model.store.removeFromPlaylist(id, songs[i].id) }
-                songs.remove(atOffsets: idx)
+                let gone = idx.map { shown[$0].id }
+                for g in gone { model.store.removeFromPlaylist(id, g) }
+                songs.removeAll { gone.contains($0.id) }
                 model.changed()
             }
-            .onMove { from, to in
+            .onMove(perform: untouched ? { from, to in
                 songs.move(fromOffsets: from, toOffset: to)
                 model.store.reorderPlaylist(id, songs)
-            }
+            } : nil)
         }
         .themedList(t)
         .navigationTitle(name)

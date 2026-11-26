@@ -16,6 +16,11 @@ enum Core {
         take(pestana_playlist_links(html, url))
     }
 
+    /// Artist, discography or album page -> {name, songs:[{id,label}], albums:[{slug,name,year,kind}]}
+    static func artistPage(_ html: String, url: String) -> String {
+        take(pestana_artist_page(html, url))
+    }
+
     static func render(
         _ text: String, key: String, transpose: Int, simplify: Bool, view: Int,
         showTabs: Bool, accidentals: Int, cols: Int

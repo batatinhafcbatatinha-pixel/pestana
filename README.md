@@ -37,11 +37,13 @@ Todo arquivo de release tem um atestado assinado de proveniência. Para conferir
 - **Instrumentos:** violão/guitarra ou baixo, à escolha em Ajustes ou dentro da cifra. Os diagramas viram caixas de baixo (tônica, quinta e oitava), a versão para baixo da cifra abre primeiro e o afinador muda junto. Há também modo **canhoto**.
 - **Tudo local:** favoritos (músicas, artistas e álbuns), playlists, histórico e ajustes por música ficam num SQLite no aparelho. Não existe conta nem servidor.
 - **Offline:** toda cifra aberta fica salva. Dá para baixar uma playlist inteira de uma vez para usar sem internet.
+- **Ordenar e filtrar:** playlists, favoritas e álbuns podem ser ordenados (tocadas por último, lançamento, A–Z, artista, álbum) e filtrados por solo, riff, capotraste e afinação.
+- **Página do artista:** as 15 músicas mais tocadas e a discografia completa.
 
 ## Leitura de cifras
 
 - Os acordes ficam **sempre sobre a sílaba certa**. Numa tela estreita, a linha de acordes e a letra quebram juntas, na mesma coluna, e nunca no meio de um acorde. As tablaturas quebram em bloco, com as 6 cordas alinhadas.
-- **Seções:** Principal, Simplificada, Acordes (sem tablaturas de solo e riff), Solos, Riffs e as outras versões publicadas (Versão 2, 3…). Se a música não tem versão simplificada, o app gera uma, reduzindo os acordes a tríades.
+- **Seções:** Principal, Simplificada, Solos, Riffs e as outras versões publicadas (Acústica, Versão 2, 3…). A aba Simplificada só aparece quando a música tem essa versão; para as outras, "Simplificar acordes" reduz os acordes a tríades.
 - **Ajustes de leitura:** transposição com a grafia certa (♯/♭ conforme o tom), capotraste com formas equivalentes, simplificar acordes, mostrar ou ocultar tablaturas e diagramas.
 - **Diagramas de acorde para qualquer acorde:** a tabela cobre os shapes abertos clássicos, e os demais saem de uma busca que pontua a tocabilidade (posição, pestana, cordas abafadas, baixo correto). Há modo canhoto.
 - **Rolagem automática:** velocidade ajustável, lembrada por música.

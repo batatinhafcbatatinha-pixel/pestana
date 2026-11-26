@@ -15,7 +15,8 @@ pub fn decode_entities(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let end = rest[..rest.len().min(12)].find(';');
+        // Looked for byte by byte: twelve bytes on may be the middle of a character.
+        let end = rest.as_bytes()[..rest.len().min(12)].iter().position(|&b| b == b';');
         let Some(end) = end else {
             out.push('&');
             rest = &rest[1..];
@@ -154,12 +155,29 @@ fn origin(u: &str) -> &str {
     }
 }
 
-const VERSION_WORDS: [&str; 14] = [
+const VERSION_WORDS: [&str; 16] = [
     "simplificada", "principal", "versão", "versao", "version", "tab", "violão", "violao", "guitarra", "cavaco",
-    "ukulele", "baixo", "teclado", "viola",
+    "ukulele", "baixo", "teclado", "viola", "acústic", "acustic",
 ];
 
-const VERSION_SKIP: [&str; 8] = ["imprimir", "letra", "video", "vídeo", "aula", "coment", "enviar", "corrigir"];
+/// The address the page gives as its own (`<link rel="canonical">`). A site
+/// that answers a version it does not have with the main sheet says so here.
+fn canonical(html: &str, low: &str) -> String {
+    let mut pos = 0;
+    while let Some(i) = low[pos..].find("<link") {
+        let start = pos + i;
+        let Some(end) = low[start..].find('>') else { break };
+        let tag = &html[start..start + end];
+        if attr(tag, "rel").is_some_and(|r| r.eq_ignore_ascii_case("canonical")) {
+            return attr(tag, "href").map(decode_entities).unwrap_or_default();
+        }
+        pos = start + end;
+    }
+    String::new()
+}
+
+const VERSION_SKIP: [&str; 10] =
+    ["imprimir", "letra", "video", "vídeo", "aula", "coment", "enviar", "corrigir", "tabspro", "tabs pro"];
 
 /// Reads a JSON string literal starting right after its opening quote.
 fn json_string(s: &str) -> Option<String> {
@@ -334,6 +352,8 @@ pub fn extract(html: &str, page_url: &str) -> String {
     j.key("key").string(&key);
     j.key("capo").int(capo);
     j.key("tuning").string(&tuning);
+    j.key("canonical").string(&canonical(html, &low));
+    j.key("version").string(&version_name(html, page_url));
     j.key("text").string(sheet.trim_matches('\n'));
     j.key("versions").begin_array();
     for (label, url) in &versions {
@@ -348,19 +368,49 @@ pub fn extract(html: &str, page_url: &str) -> String {
 
 
 /// Paths whose first segment is a site section, not an artist.
-const NOT_ARTIST: [&str; 34] = [
+const NOT_ARTIST: [&str; 40] = [
+    "letra", "explorar", "videos", "mais", "mais-acessadas", "pedir-videoaula",
     "musico", "musicos", "playlist", "playlists", "estilos", "estilo", "aprenda", "cursos", "curso", "blog", "academy",
     "top", "novidades", "contribuicoes", "contribuicao", "app", "dicionario-de-acordes", "afinador", "metronomo",
     "ajuda", "enviar", "login", "radio", "videoaulas", "videoaula", "busca", "cifras", "artistas", "generos", "palco",
     "ranking", "termos", "privacidade", "assine",
 ];
 
+/// A list's name out of its card on a profile page, which reads
+/// "Favoritas Favoritas Fulano • 539 músicas": the name (twice when the card
+/// has no cover), the owner, the size.
+fn list_label(label: &str, owner: &str) -> String {
+    let l = label.split('•').next().unwrap_or("").trim();
+    let l = if owner.is_empty() { l } else { l.strip_suffix(owner).unwrap_or(l).trim() };
+    // "Favoritas Favoritas", or "FavoritasFavoritas" when nothing separates the two.
+    let c: Vec<char> = l.chars().collect();
+    let half = c.len() / 2;
+    if half > 0 {
+        let (a, b): (String, String) = (c[..half].iter().collect(), c[c.len() - half..].iter().collect());
+        if a.trim() == b.trim() && c[half..c.len() - half].iter().all(|x| *x == ' ') {
+            return a.trim().to_string();
+        }
+    }
+    l.to_string()
+}
+
 /// Links on a playlist or profile page: songs ("/artist/song/") and playlists.
 pub fn playlist_links(html: &str, page_url: &str) -> String {
     let low = lower(html);
     let org = origin(page_url).to_string();
     let page_path = url_path(page_url).trim_end_matches('/').to_string();
-    let title = elements(html, &low, "h1").first().map(|(_, b)| clean(b))
+    // The page's first heading that is not the site's own logo: the owner's
+    // name, on a profile page and on a list page alike.
+    let heading = elements(html, &low, "h1").iter().map(|(_, b)| clean(b)).find(|h| !h.is_empty() && !h.eq_ignore_ascii_case("cifra club"));
+    // A list page names the list apart from its owner.
+    let list_name = elements(html, &low, "span")
+        .iter()
+        .find(|(tag, _)| attr(tag, "class").is_some_and(|c| c.contains("songbook-title")))
+        .map(|(_, b)| clean(b))
+        .filter(|n| !n.is_empty());
+    let owner = heading.clone().unwrap_or_default();
+    let title = list_name
+        .or(heading)
         .or_else(|| elements(html, &low, "title").first().map(|(_, b)| clean(b).split(" - ").next().unwrap_or("").to_string()))
         .unwrap_or_default();
     let mut songs: Vec<(String, String, String)> = Vec::new(); // (path, label, artist slug)
@@ -375,16 +425,26 @@ pub fn playlist_links(html: &str, page_url: &str) -> String {
         let label = clean(body);
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let pl = path.to_lowercase();
-        if pl.contains("playlist") {
+        // Lists: ".../playlists/456/" and, on newer pages, "/@123/repertorio/456/".
+        if pl.contains("playlist") || pl.contains("/repertorio/") {
             let p = path.trim_end_matches('/').to_string();
-            if p != page_path && !label.is_empty() && label.chars().count() < 80 && !lists.iter().any(|(u, _)| *u == p) {
+            // The page itself, whichever way it is addressed ("/musico/123/..." or "/@123/...").
+            let own = p == page_path || (p.contains("/repertorio/") && page_path.contains("/repertorio/") && p.rsplit('/').next() == page_path.rsplit('/').next());
+            let label = list_label(&label, &owner);
+            if !own && !label.is_empty() && label.chars().count() < 80 && !lists.iter().any(|(u, _)| *u == p) {
                 lists.push((p, label));
             }
             continue;
         }
+        // "/artist/song/", or one version of it: "/artist/song/simplificada.html".
+        let segs = if segs.len() == 3 && segs[2].ends_with(".html") { &segs[..2] } else { &segs[..] };
         if segs.len() != 2 || NOT_ARTIST.contains(&segs[0]) || segs[1].contains('.') || label.is_empty() {
             continue;
         }
+        // A song card holds more than the title (position, artist, key, a
+        // menu button): take the title line when the card has one.
+        let title = card_name(body);
+        let label = if title.is_empty() { label } else { title };
         if !segs.iter().all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
             continue;
         }
@@ -402,9 +462,12 @@ pub fn playlist_links(html: &str, page_url: &str) -> String {
     j.key("title").string(&title);
     j.key("songs").begin_array();
     for (id, label, _) in &songs {
+        // Lists name each song "Title - Artist".
+        let (name, artist) = label.rsplit_once(" - ").unwrap_or((label, ""));
         j.begin_object();
         j.key("id").string(id);
-        j.key("label").string(label);
+        j.key("label").string(name.trim());
+        j.key("artist").string(artist.trim());
         j.end_object();
     }
     j.end_array();
@@ -419,11 +482,128 @@ pub fn playlist_links(html: &str, page_url: &str) -> String {
     j.finish()
 }
 
+/// What the site calls the version a page such as ".../song/sjgsmzp.html"
+/// holds ("Versão 7", "Simplificada"); empty for the song's own address.
+/// The page's data names each version next to its address:
+/// "label":{"name":"Versão 7","slug":"sjgsmzp"}, quotes escaped or not.
+fn version_name(html: &str, page_url: &str) -> String {
+    let path = url_path(page_url);
+    let Some(slug) = path.rsplit('/').next().and_then(|s| s.strip_suffix(".html")).filter(|s| !s.is_empty()) else {
+        return String::new();
+    };
+    for quote in ["\\\"", "\""] {
+        let needle = format!("{quote}slug{quote}:{quote}{slug}{quote}");
+        let Some(at) = html.find(&needle) else { continue };
+        let Some(name) = html[..at].rfind("name").filter(|n| at - n < 120) else { continue };
+        let value: String = html[name + 4..at]
+            .trim_start_matches(|c| c == '\\' || c == '"' || c == ':')
+            .chars()
+            .take_while(|c| *c != '\\' && *c != '"')
+            .collect();
+        return decode_entities(value.trim()).to_string();
+    }
+    String::new()
+}
+
+/// The name written on a song or album card: the card's own title line, else
+/// what its cover picture is described as ('Capa da música "X", de Y').
+fn card_name(body: &str) -> String {
+    let low = lower(body);
+    let paragraphs = elements(body, &low, "p");
+    let titled = paragraphs.iter().find(|(tag, _)| attr(tag, "class").is_some_and(|c| c.contains("primaryLabel")));
+    // Song rows start with their position ("01"); the title is the first line that is not a number.
+    let line = titled.or_else(|| paragraphs.iter().find(|(_, b)| !clean(b).chars().all(|c| c.is_ascii_digit())));
+    if let Some((_, b)) = line {
+        let name = clean(b);
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    if let Some(i) = low.find("<img") {
+        let end = low[i..].find('>').map_or(body.len(), |e| i + e);
+        let alt = attr(&body[i..end], "alt").map(decode_entities).unwrap_or_default();
+        if let (Some(a), Some(b)) = (alt.find('"'), alt.rfind('"')) {
+            if b > a + 1 {
+                return alt[a + 1..b].trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// An artist's page, the discography page or an album page of Cifra Club:
+/// the songs in the order the page lists them (the artist's most played, or
+/// the album's tracks) and the albums it links to, as
+/// {name, songs:[{id,label}], albums:[{slug,name,year,kind}]}.
+pub fn artist_page(html: &str, page_url: &str) -> String {
+    let low = lower(html);
+    let artist = url_path(page_url).split('/').find(|s| !s.is_empty()).unwrap_or("").to_string();
+    let name = elements(html, &low, "h1").iter().map(|(_, b)| clean(b)).find(|h| !h.is_empty() && !h.eq_ignore_ascii_case("cifra club"));
+    let mut songs: Vec<(String, String)> = Vec::new();
+    let mut albums: Vec<(String, String, String, &str)> = Vec::new();
+    for (tag, body) in elements(html, &low, "a") {
+        let Some(href) = attr(tag, "href") else { continue };
+        let href = decode_entities(href);
+        if href.contains('?') {
+            continue; // "tabs-baixo/?autoplay", "?instrument=bass": other views of the page
+        }
+        let path = url_path(&href).to_string();
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if !segs.iter().all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+            continue;
+        }
+        if segs.len() == 3 && segs[0] == artist && segs[1] == "discografia" {
+            if albums.iter().any(|a| a.0 == segs[2]) {
+                continue;
+            }
+            let title = card_name(body);
+            // The slug ends with the year: "by-the-way-2002".
+            let year = segs[2].rsplit('-').next().filter(|y| y.len() == 4 && y.chars().all(|c| c.is_ascii_digit())).unwrap_or("");
+            let kind = if clean(body).to_lowercase().contains("single") { "single" } else { "album" };
+            if !title.is_empty() {
+                albums.push((segs[2].to_string(), title, year.to_string(), kind));
+            }
+            continue;
+        }
+        if segs.len() != 2 || NOT_ARTIST.contains(&segs[0]) {
+            continue;
+        }
+        let id = format!("{}/{}", segs[0], segs[1]);
+        let title = card_name(body);
+        if title.is_empty() || songs.iter().any(|s| s.0 == id) {
+            continue;
+        }
+        songs.push((id, title));
+    }
+    let mut j = Json::object();
+    j.key("name").string(&name.unwrap_or_default());
+    j.key("songs").begin_array();
+    for (id, label) in &songs {
+        j.begin_object();
+        j.key("id").string(id);
+        j.key("label").string(label);
+        j.end_object();
+    }
+    j.end_array();
+    j.key("albums").begin_array();
+    for (slug, title, year, kind) in &albums {
+        j.begin_object();
+        j.key("slug").string(slug);
+        j.key("name").string(title);
+        j.key("year").string(year);
+        j.key("kind").string(kind);
+        j.end_object();
+    }
+    j.end_array();
+    j.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const PAGE: &str = r#"<html><head><title>Tempo Perdido - Legião Urbana - Cifra Club</title></head>
+    const PAGE: &str = r#"<html><head><title>Tempo Perdido - Legião Urbana - Cifra Club</title>
+<link rel="stylesheet" href="/a.css"><link rel="canonical" href="https://www.site.com/legiao-urbana/tempo-perdido/"/></head>
 <body><h1 class="t1">Tempo Perdido</h1><h2 class="t3"><a href="/legiao-urbana/">Legião Urbana</a></h2>
 <div>Tom: <a class="js-modal-trigger">C</a></div>
 <div>Capotraste na 2ª casa</div>
@@ -445,6 +625,7 @@ mod tests {
         assert!(j.contains(r#""artist":"Legião Urbana""#), "{j}");
         assert!(j.contains(r#""key":"C""#), "{j}");
         assert!(j.contains(r#""capo":2"#), "{j}");
+        assert!(j.contains(r#""canonical":"https://www.site.com/legiao-urbana/tempo-perdido/""#), "{j}");
         assert!(j.contains("[Intro] C  Dm"), "{j}");
         assert!(j.contains("E|--3--&--|"), "{j}");
         assert!(j.contains("simplificada.html"));
@@ -464,11 +645,83 @@ mod tests {
 <a href="https://evil.com/a/b/">x</a>
 </body></html>"#;
         let j = playlist_links(html, "https://www.site.com/musico/123/playlists/789/");
-        assert!(j.contains(r#"{"id":"legiao-urbana/tempo-perdido","label":"Tempo Perdido Legião Urbana"}"#), "{j}");
+        assert!(j.contains(r#"{"id":"legiao-urbana/tempo-perdido","label":"Tempo Perdido Legião Urbana","artist":""}"#), "{j}");
         assert!(j.contains(r#""id":"djavan/oceano""#), "{j}");
         assert!(!j.contains("estilos") && !j.contains("evil"), "{j}");
         assert!(j.contains(r#""url":"https://www.site.com/musico/123/playlists/456/""#), "{j}");
         assert!(j.contains(r#""title":"Ensaio""#), "{j}");
+    }
+
+    // A list page as the site draws it now, and the page it sends before
+    // drawing anything: only the site's own menu, with its A-Z index.
+    #[test]
+    fn repertoire_page() {
+        let html = r#"<html><head><title>Perfil de Fulano - / - Cifra Club</title></head><body>
+<h1><a href="/">Cifra Club</a></h1><h1> Fulano de Tal </h1>
+<h3><span class="songbook-title" title="Favoritas 2">Favoritas 2</span></h3>
+<a href="/letra/A/">A</a><a href="/letra/B/">B</a><a href="/explorar/musicas/">Em alta</a>
+<a href="/eminem/stan/?songbookId=1&amp;key=C&amp;capo=4">Stan - Eminem</a>
+<a href="/the-neighbourhood/sweater-weather/simplificada.html?songbookId=1">Sweater Weather - The Neighbourhood</a>
+<a href="/lana-del-rey/brooklyn-baby/?songbookId=1"><p>03</p><div><p class="a primaryLabel"><span>Brooklyn Baby</span></p></div><span>Lana Del Rey</span><span>•</span><span>Db</span></a><button>Opções</button>
+<a href="/@123/repertorio/456/">Capotraste Fulano de Tal • 45 músicas</a>
+<a href="/@123/repertorio/789/">Favoritas Favoritas Fulano de Tal • 539 músicas</a>
+<a href="/@123/repertorio/790/"><b>Quero aprender</b><b>Quero aprender</b> Fulano de Tal • 2 músicas</a>
+<a href="/aviso-legal.html">Termos</a>
+</body></html>"#;
+        let j = playlist_links(html, "https://www.site.com/musico/123/repertorio/1/");
+        assert!(j.contains(r#""title":"Favoritas 2""#), "{j}");
+        assert!(j.contains(r#"{"id":"eminem/stan","label":"Stan","artist":"Eminem"}"#), "{j}");
+        assert!(j.contains(r#"{"id":"the-neighbourhood/sweater-weather","label":"Sweater Weather","artist":"The Neighbourhood"}"#), "{j}");
+        assert!(j.contains(r#"{"id":"lana-del-rey/brooklyn-baby","label":"Brooklyn Baby","artist":""}"#), "{j}");
+        assert!(!j.contains("letra") && !j.contains("explorar") && !j.contains("aviso"), "{j}");
+        assert!(j.contains(r#"{"url":"https://www.site.com/@123/repertorio/456/","label":"Capotraste"}"#), "{j}");
+        assert!(j.contains(r#"{"url":"https://www.site.com/@123/repertorio/789/","label":"Favoritas"}"#), "{j}");
+        assert!(j.contains(r#"{"url":"https://www.site.com/@123/repertorio/790/","label":"Quero aprender"}"#), "{j}");
+        // The page is not one of its own lists, whichever way it is addressed.
+        let j = playlist_links(html, "https://www.site.com/musico/123/repertorio/456/");
+        assert!(!j.contains("repertorio/456"), "{j}");
+        let empty = r#"<html><body><a href="/letra/A/">A</a><a href="/letra/1/">#</a><a href="/mais/">Mais</a></body></html>"#;
+        assert!(playlist_links(empty, "https://www.site.com/musico/123/repertorio/456/").contains(r#""songs":[]"#));
+    }
+
+    #[test]
+    fn ampersand_before_a_wide_character() {
+        // The twelfth byte after the & falls inside the zero-width space.
+        assert_eq!(decode_entities("a & bcdefghi\u{200b}j &amp; k"), "a & bcdefghi\u{200b}j & k");
+        assert_eq!(decode_entities("&áéíóúâêô"), "&áéíóúâêô");
+    }
+
+    #[test]
+    fn page_of_one_version_says_which() {
+        let html = r#"<script>x({\"label\":{\"name\":\"Principal\",\"slug\":\"principal\"}},{\"label\":{\"name\":\"Versão 7\",\"slug\":\"sjgsmzp\"},\"metadata\":1})</script>"#;
+        assert_eq!(version_name(html, "https://www.site.com/banda/musica/sjgsmzp.html"), "Versão 7");
+        assert_eq!(version_name(html, "https://www.site.com/banda/musica/"), "");
+        assert_eq!(version_name(html, "https://www.site.com/banda/musica/outra.html"), "");
+        let plain = r#"{"label":{"name":"Simplificada","slug":"simplificada"}}"#;
+        assert_eq!(version_name(plain, "https://www.site.com/banda/musica/simplificada.html?x=1"), "Simplificada");
+    }
+
+    #[test]
+    fn artist_page_songs_and_albums() {
+        let html = r#"<html><body><h1><a href="/">Cifra Club</a></h1><h1>Banda Tal</h1>
+<a href="/banda-tal/">Cifra</a><a href="/banda-tal/?instrument=bass">Tabs de baixo</a>
+<ol><li><a href="/banda-tal/primeira/"><img alt="Capa da música &quot;Primeira&quot;, de Banda Tal"><p>01</p>
+<div><p class="x primaryLabel"><span>Primeira</span></p></div><span>19.264</span><span>Am</span></a><button>Opções</button></li>
+<li><a href="/banda-tal/segunda-vez/"><p>02</p><p><span>Segunda Vez</span></p><span>9.788</span></a></li>
+<li><a href="/banda-tal/primeira/"><p>01</p><p class="primaryLabel">Primeira</p></a></li></ol>
+<a href="/banda-tal/discografia.html">Ver mais</a>
+<a href="/banda-tal/discografia/disco-novo-2022/"><img alt="Capa do álbum &quot;Disco Novo&quot;, de Banda Tal"><p>Disco Novo</p><span><span>2022</span><span>•</span><span>Álbum</span></span></a>
+<a href="/banda-tal/discografia/avulsa-2016/"><img alt="Capa do álbum &quot;Avulsa&quot;, de Banda Tal"><span><span>2016</span><span>•</span><span>Single/EP</span></span></a>
+<a href="/banda-tal/segunda-vez/tabs-baixo/?autoplay=true">Como tocar no baixo</a>
+<a href="/letra/A/">A</a><a href="/outra-banda/">Outra Banda</a>
+</body></html>"#;
+        let j = artist_page(html, "https://www.site.com/banda-tal/");
+        assert!(j.contains(r#""name":"Banda Tal""#), "{j}");
+        assert!(j.contains(r#""songs":[{"id":"banda-tal/primeira","label":"Primeira"},{"id":"banda-tal/segunda-vez","label":"Segunda Vez"}]"#), "{j}");
+        assert!(
+            j.contains(r#""albums":[{"slug":"disco-novo-2022","name":"Disco Novo","year":"2022","kind":"album"},{"slug":"avulsa-2016","name":"Avulsa","year":"2016","kind":"single"}]"#),
+            "{j}"
+        );
     }
 
     #[test]

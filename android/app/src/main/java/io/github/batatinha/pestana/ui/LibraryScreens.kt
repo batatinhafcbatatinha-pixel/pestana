@@ -1,5 +1,6 @@
 package io.github.batatinha.pestana.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -59,25 +60,41 @@ fun LibraryScreen(state: AppState) {
     val t = LocalReading.current
     var tab by rememberSaveable { mutableStateOf(0) }
     var newList by remember { mutableStateOf(false) }
+    // Playlists picked by holding one: the top bar then offers to delete them.
+    var picked by remember { mutableStateOf(setOf<Long>()) }
+    var deletingPicked by remember { mutableStateOf(false) }
+    BackHandler(enabled = picked.isNotEmpty()) { picked = emptySet() }
     val v = state.dataVersion
+    val favSongs = remember(v, tab) { if (tab == 0) state.db.favs("song").map { SongRef(it.id, it.title, it.sub) } else emptyList() }
+    val favOrder = rememberSongOrder(state, "favs", favSongs, "Ordem padrão")
     Column(Modifier.fillMaxSize()) {
-        TopBar("Biblioteca", "Salva só neste aparelho") {
-            if (tab == 3) IconButton(onClick = { newList = true }) { Icon(Ic.Plus, "Nova playlist", tint = t.text) }
-            if (tab == 4) IconButton(onClick = { state.go(Screen.Import()) }) { Icon(Ic.Plus, "Importar cifra", tint = t.text) }
+        if (picked.isNotEmpty()) {
+            TopBar(if (picked.size == 1) "1 playlist selecionada" else "${picked.size} playlists selecionadas", null, onBack = { picked = emptySet() }) {
+                IconButton(onClick = { deletingPicked = true }) { Icon(Ic.Trash, "Apagar selecionadas", tint = t.text) }
+            }
+        } else {
+            TopBar("Biblioteca", "Salva só neste aparelho") {
+                if (tab == 3) IconButton(onClick = { newList = true }) { Icon(Ic.Plus, "Nova playlist", tint = t.text) }
+                if (tab == 4) IconButton(onClick = { state.go(Screen.Import()) }) { Icon(Ic.Plus, "Importar cifra", tint = t.text) }
+            }
         }
         Row(
             Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            LIB_TABS.forEachIndexed { i, s -> Pill(s, tab == i) { tab = i } }
+            LIB_TABS.forEachIndexed { i, s -> Pill(s, tab == i) { tab = i; picked = emptySet() } }
         }
         Spacer(Modifier.height(4.dp))
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
             when (tab) {
                 0 -> {
-                    val songs = state.db.favs("song").map { SongRef(it.id, it.title, it.sub) }
-                    if (songs.isEmpty()) item { EmptyState("Nenhuma música favorita", "Toque no coração ao abrir uma cifra.") }
-                    items(songs, key = { it.id }) { SongRow(state, it, songs) }
+                    val songs = favOrder.shown
+                    if (favSongs.isEmpty()) item { EmptyState("Nenhuma música favorita", "Toque no coração ao abrir uma cifra.") }
+                    if (favSongs.isNotEmpty()) item { favOrder.bar() }
+                    if (favSongs.isNotEmpty() && songs.isEmpty()) item { EmptyState("Nenhuma música com esses filtros", "Os filtros olham as cifras salvas no aparelho.") }
+                    items(songs, key = { it.id }) { s ->
+                        ListRow(s.title, favOrder.subtitle(s), leading = { SongThumb(s) }) { state.go(Screen.Song(s, songs)) }
+                    }
                 }
                 1 -> {
                     val artists = state.db.favs("artist")
@@ -100,8 +117,15 @@ fun LibraryScreen(state: AppState) {
                     val lists = state.db.playlists()
                     if (lists.isEmpty()) item { EmptyState("Nenhuma playlist", "Crie listas para ensaios, shows ou estudo. Toque em + acima.") }
                     items(lists, key = { it.id }) { p ->
-                        ListRow(p.name, if (p.count == 1) "1 música" else "${p.count} músicas", leading = { Monogram(p.name, Ic.Playlist, round = false) }) {
-                            state.go(Screen.PlaylistDetail(p.id, p.name))
+                        ListRow(
+                            p.name, if (p.count == 1) "1 música" else "${p.count} músicas",
+                            leading = { Monogram(p.name, if (p.id in picked) Ic.Check else Ic.Playlist, round = false) },
+                            selected = p.id in picked,
+                            onLongClick = { picked = if (p.id in picked) picked - p.id else picked + p.id },
+                        ) {
+                            // While picking, a tap picks too.
+                            if (picked.isEmpty()) state.go(Screen.PlaylistDetail(p.id, p.name))
+                            else picked = if (p.id in picked) picked - p.id else picked + p.id
                         }
                     }
                 }
@@ -113,6 +137,21 @@ fun LibraryScreen(state: AppState) {
             }
             item { Spacer(Modifier.height(v.coerceAtMost(0).dp)) }
         }
+    }
+    if (deletingPicked) {
+        val n = picked.size
+        AlertDialog(
+            onDismissRequest = { deletingPicked = false }, containerColor = t.surface,
+            title = { Text(if (n == 1) "Apagar a playlist selecionada?" else "Apagar as $n playlists selecionadas?") },
+            text = { Text("As cifras continuam salvas; só as listas são apagadas.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    picked.forEach { state.db.deletePlaylist(it) }
+                    picked = emptySet(); deletingPicked = false; state.changed()
+                }) { Text("Apagar") }
+            },
+            dismissButton = { TextButton(onClick = { deletingPicked = false }) { Text("Cancelar") } },
+        )
     }
     if (newList) {
         var name by remember { mutableStateOf("") }
@@ -139,8 +178,15 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
     var editing by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+
+    // Moving songs up and down is done on the list as it was put together.
+    val order = rememberSongOrder(state, "playlist$id", songs, "Ordem da lista", active = !editing)
+    val shown = order.shown
+    val filtering = order.filtering
+
     Column(Modifier.fillMaxSize()) {
-        TopBar(name, if (songs.size == 1) "1 música" else "${songs.size} músicas", onBack = { state.back() }) {
+        val count = if (songs.size == 1) "1 música" else "${songs.size} músicas"
+        TopBar(name, if (filtering && !editing) "${shown.size} de $count" else count, onBack = { state.back() }) {
             IconButton(onClick = { editing = !editing }) { Icon(if (editing) Ic.Check else Ic.Edit, "Editar", tint = if (editing) t.chord else t.text) }
         }
         if (editing) {
@@ -149,9 +195,10 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
                 Pill("Apagar playlist", false) { deleting = true }
             }
         } else if (songs.isNotEmpty()) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(
-                    onClick = { state.go(Screen.Song(songs.first(), songs)) },
+                    enabled = shown.isNotEmpty(),
+                    onClick = { state.go(Screen.Song(shown.first(), shown)) },
                     colors = ButtonDefaults.buttonColors(containerColor = t.chord, contentColor = t.bg),
                 ) {
                     Icon(Ic.Play, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text("Tocar em sequência")
@@ -165,10 +212,12 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
                     else -> Pill("✓ Disponível offline", false) {}
                 }
             }
+            order.bar()
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
             if (songs.isEmpty()) item { EmptyState("Playlist vazia", "Abra uma cifra e use ⋯ › Adicionar à playlist.") }
-            itemsIndexed(songs, key = { _, s -> s.id }) { i, s ->
+            if (songs.isNotEmpty() && shown.isEmpty()) item { EmptyState("Nenhuma música com esses filtros", "Os filtros olham as cifras salvas no aparelho.") }
+            itemsIndexed(shown, key = { _, s -> s.id }) { i, s ->
                 if (editing) {
                     ListRow(s.title, s.artist, leading = { SongThumb(s) }, trailing = {
                         Row {
@@ -184,7 +233,7 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
                         }
                     }) {}
                 } else {
-                    ListRow(s.title, s.artist, leading = { SongThumb(s) }) { state.go(Screen.Song(s, songs)) }
+                    ListRow(s.title, order.subtitle(s), leading = { SongThumb(s) }) { state.go(Screen.Song(s, shown)) }
                 }
             }
         }

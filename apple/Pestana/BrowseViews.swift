@@ -115,30 +115,42 @@ struct ArtistView: View {
     @Environment(\.reading) private var t
     @State private var songs: [SongRef] = []
     @State private var albums: [AlbumRef] = []
+    /// The artist's page on the site: the most played songs and the whole discography.
+    @State private var page: Source.ArtistPage?
     @State private var loading = true
     @State private var fav = false
 
     var body: some View {
         let img = artist.img.isEmpty ? images.artist(artist.slug) : artist.img
-        List {
+        let top = page?.top ?? []
+        // Every album the site lists; what the search found until that arrives.
+        let listed = page?.albums ?? []
+        let discs = listed.isEmpty ? albums : listed
+        // The search's songs that are not among the most played already.
+        let others = songs.filter { s in !top.contains(where: { $0.id == s.id }) }
+        return List {
             HeaderView(title: artist.name, subtitle: "Artista", url: img, round: true, symbol: nil).rowBackground(t)
             if loading { ProgressView().frame(maxWidth: .infinity).rowBackground(t) }
-            if !songs.isEmpty {
-                Section("Músicas") { ForEach(songs) { SongRowLink(song: $0, queue: songs).rowBackground(t) } }
-            } else if !loading {
+            if top.isEmpty && others.isEmpty && !loading {
                 EmptyStateView(title: "Sem músicas", message: "Não encontrei cifras desse artista agora.").rowBackground(t)
             }
-            if !albums.isEmpty {
-                Section("Álbuns") {
-                    ForEach(albums, id: \.key) { a in
+            if !top.isEmpty {
+                Section("Mais tocadas") { ForEach(top) { SongRowLink(song: $0, queue: top).rowBackground(t) } }
+            }
+            if !discs.isEmpty {
+                Section(discs.count == 1 ? "1 álbum" : "\(discs.count) álbuns") {
+                    ForEach(discs, id: \.key) { a in
                         NavigationLink(value: Route.album(a)) {
                             HStack(spacing: 14) {
                                 Thumb(text: a.name, symbol: "opticaldisc", url: a.img.isEmpty ? images.album(a.key) : a.img, round: false)
-                                Row(title: a.name, subtitle: a.year)
+                                Row(title: a.name, subtitle: [a.year, a.kind == "single" ? "Single/EP" : ""].filter { !$0.isEmpty }.joined(separator: " · "))
                             }
                         }.rowBackground(t)
                     }
                 }
+            }
+            if !others.isEmpty {
+                Section(top.isEmpty ? "Músicas" : "Outras músicas") { ForEach(others) { SongRowLink(song: $0, queue: others).rowBackground(t) } }
             }
         }
         .themedList(t)
@@ -146,6 +158,13 @@ struct ArtistView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 FavButton(on: fav) { fav = model.toggleFav(artist: artist) }
+            }
+        }
+        .task {
+            if let cached = Source.cachedArtistPage(artist.slug) {
+                page = cached
+            } else {
+                page = await Source.artistPage(artist)
             }
         }
         .task {
@@ -167,16 +186,19 @@ struct AlbumView: View {
     @State private var songs: [SongRef] = []
     @State private var loading = true
     @State private var fav = false
+    // Inside one album, ordering by artist, album or release says nothing.
+    @StateObject private var order = SongOrder(key: "album", firstLabel: "Faixas", sorts: [.manual, .played, .title])
 
     var body: some View {
-        List {
+        let shown = order.shown(songs)
+        return List {
             HeaderView(title: album.name, subtitle: [album.artist, album.year].filter { !$0.isEmpty }.joined(separator: " · "),
                        url: album.img.isEmpty ? images.album(album.key) : album.img, round: false, symbol: "opticaldisc").rowBackground(t)
             if loading { ProgressView().frame(maxWidth: .infinity).rowBackground(t) }
             if !songs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        NavigationLink(value: Route.song(songs[0], songs)) {
+                        NavigationLink(value: Route.song(shown.first ?? songs[0], shown.isEmpty ? songs : shown)) {
                             Text("Tocar em sequência").font(.subheadline).padding(.horizontal, 14).padding(.vertical, 7)
                                 .background(Capsule().fill(t.surface)).foregroundColor(t.text)
                         }.buttonStyle(.plain)
@@ -187,7 +209,11 @@ struct AlbumView: View {
                         Pill(text: "Baixar offline", selected: false) { model.downloadForOffline(songs) }
                     }
                 }.rowBackground(t)
-                ForEach(songs) { SongRowLink(song: $0, queue: songs).rowBackground(t) }
+                SongOrderBar(order: order, songs: songs).rowBackground(t)
+                if shown.isEmpty {
+                    EmptyStateView(title: "Nenhuma música com esses filtros", message: "Os filtros olham as cifras salvas no aparelho.").rowBackground(t)
+                }
+                ForEach(shown) { SongRowLink(song: $0, queue: shown).rowBackground(t) }
             } else if !loading {
                 EmptyStateView(title: "Sem músicas", message: "A busca não trouxe as faixas deste álbum.").rowBackground(t)
             }

@@ -132,8 +132,97 @@ object Source {
         onUpdate(result.first, result.second)
     }
 
+    /** The most played songs of an artist, in the site's order, and every album. */
+    class ArtistPage(val top: List<SongRef>, val albums: List<AlbumRef>)
+
+    private val artistPages = HashMap<String, ArtistPage>()
+
+    fun cachedArtistPage(slug: String) = artistPages[slug]
+
+    /** A page of the site as HTML: plain HTTP, or the WebView when the site refuses that. */
+    private suspend fun pageHtml(ctx: Context, url: String): String? {
+        val http = withContext(Dispatchers.IO) {
+            withTimeoutOrNull(15_000) { runCatching { kotlinx.coroutines.runInterruptible { get(ctx, url) } }.getOrNull() }
+        }
+        if (http != null && http.first == 200) return http.second
+        if (http != null && http.first == 404) return null
+        return WebFetcher.fetch(ctx, url, WebFetcher.Wait.LINKS)
+    }
+
+    private suspend fun sitePage(ctx: Context, url: String): JSONObject? {
+        val html = pageHtml(ctx, url) ?: return null
+        return withContext(Dispatchers.Default) { runCatching { JSONObject(Native.artistPage(html, url)) }.getOrNull() }
+    }
+
+    private fun JSONObject.objects(key: String): List<JSONObject> =
+        optJSONArray(key)?.let { arr -> (0 until arr.length()).map { arr.getJSONObject(it) } }.orEmpty()
+
+    /**
+     * Reads the artist's page (its most played songs) and the discography page
+     * (every album and single). Null when neither could be read.
+     */
+    suspend fun artistPage(ctx: Context, a: ArtistRef, top: Int = 15): ArtistPage? {
+        artistPages[a.slug]?.let { return it }
+        val base = "$SITE/${a.slug}/"
+        val main = sitePage(ctx, base) ?: return null
+        val name = a.name.ifBlank { main.optString("name") }
+        fun albums(o: JSONObject) = o.objects("albums").map {
+            AlbumRef(it.getString("slug"), it.getString("name"), name, a.slug, it.optString("year"), kind = it.optString("kind"))
+        }
+        val songs = main.objects("songs").filter { it.getString("id").startsWith(a.slug + "/") }.take(top)
+            .map { SongRef(it.getString("id"), it.getString("label"), name) }
+        // The artist's page shows only the latest albums; the discography has them all.
+        val all = sitePage(ctx, base + "discografia.html")?.let(::albums).orEmpty().ifEmpty { albums(main) }
+        if (songs.isEmpty() && all.isEmpty()) return null
+        return ArtistPage(songs, all).also { artistPages[a.slug] = it }
+    }
+
+    /** The tracks of an album, in order, from its page on the site. */
+    private suspend fun albumTracks(ctx: Context, a: AlbumRef): List<SongRef> {
+        if (a.slug.isBlank() || a.artistSlug.isBlank()) return emptyList()
+        val page = sitePage(ctx, "$SITE/${a.artistSlug}/discografia/${a.slug}/") ?: return emptyList()
+        return page.objects("songs").map {
+            val id = it.getString("id")
+            val artist = if (id.startsWith(a.artistSlug + "/")) a.artist else prettySlug(id.substringBefore('/'))
+            SongRef(id, it.getString("label"), artist, album = a.name, albumSlug = a.slug)
+        }
+    }
+
+    /**
+     * The album a song came out on, as the search knows it. Blank fields when
+     * the search answered and knew none; null when it could not be asked.
+     */
+    suspend fun songAlbum(ctx: Context, s: SongRef): Db.SongInfo? = withContext(Dispatchers.IO) {
+        val answer = withTimeoutOrNull(15_000) {
+            runCatching { kotlinx.coroutines.runInterruptible { get(ctx, SEARCH + URLEncoder.encode("${s.artist} ${s.title}".trim(), "UTF-8")) } }.getOrNull()
+        } ?: return@withContext null
+        if (answer.first != 200) return@withContext null
+        val body = answer.second
+        val start = body.indexOf('{')
+        val end = body.lastIndexOf('}')
+        if (start < 0 || end <= start) return@withContext null
+        val docs = runCatching { JSONObject(body.substring(start, end + 1)).optJSONObject("response")?.optJSONArray("docs") }.getOrNull()
+            ?: return@withContext null
+        for (i in 0 until docs.length()) {
+            val d = docs.getJSONObject(i)
+            if (d.optString("tipo") != "2" || "${d.optString("dns")}/${d.optString("url")}" != s.id) continue
+            val slug = d.optString("url_album")
+            // Album addresses end with the year: "by-the-way-2002".
+            val year = slug.substringAfterLast('-', "").takeIf { it.length == 4 }?.toIntOrNull() ?: 0
+            return@withContext Db.SongInfo(d.optString("album_name"), slug, year)
+        }
+        Db.SongInfo("", "", 0)
+    }
+
     suspend fun albumSongs(ctx: Context, a: AlbumRef, onUpdate: (List<SongRef>) -> Unit) {
         albumCache[a.key]?.let { onUpdate(it); return }
+        // The album's own page has every track, in order; the search is the fallback.
+        val tracks = albumTracks(ctx, a)
+        if (tracks.isNotEmpty()) {
+            albumCache[a.key] = tracks
+            onUpdate(tracks)
+            return
+        }
         val songs = LinkedHashMap<String, SongRef>()
         for (q in listOf("${a.artist} ${a.name}", a.name)) {
             val r = runCatching { search(ctx, q) }.getOrNull() ?: continue
@@ -145,14 +234,34 @@ object Source {
         onUpdate(list)
     }
 
-    /** Downloads and parses one sheet page. Throws with a readable message on failure. */
-    suspend fun fetchSheet(ctx: Context, url: String, songId: String, title: String, artist: String): Sheet {
+    /** Version pages the site answered with another page: not asked for again. */
+    private val missingVersions = HashSet<String>()
+
+    private fun samePage(a: String, b: String): Boolean {
+        fun path(u: String) = u.substringAfter("://").substringAfter('/', "").substringBefore('?').substringBefore('#').trimEnd('/')
+        return path(a).equals(path(b), ignoreCase = true)
+    }
+
+    /**
+     * Downloads and parses one sheet page. Throws with a readable message on failure.
+     * `version`: the page is one version of a song (simplified, acoustic, bass).
+     * Cifra Club answers a version the song does not have with the main sheet;
+     * that is a failure here, not the main sheet under another name.
+     */
+    suspend fun fetchSheet(ctx: Context, url: String, songId: String, title: String, artist: String, version: Boolean = false): Sheet {
+        if (version && url in missingVersions) error("A música não tem essa versão.")
         val html = withContext(Dispatchers.IO) {
             withTimeoutOrNull(15_000) { runCatching { kotlinx.coroutines.runInterruptible { get(ctx, url) } }.getOrNull() }?.takeIf { (code, body) -> code == 200 && hasSheet(body) }?.second
         } ?: WebFetcher.fetch(ctx, url, WebFetcher.Wait.CHORDS) ?: error("Não consegui abrir a cifra. Verifique a conexão.")
-        val sheet = withContext(Dispatchers.Default) {
-            Sheet.fromExtract(Native.extractPage(html, url), url, songId, title, artist)
+        val json = withContext(Dispatchers.Default) { Native.extractPage(html, url) }
+        if (version) {
+            val own = runCatching { JSONObject(json).optString("canonical") }.getOrDefault("")
+            if (own.isNotBlank() && !samePage(own, url)) {
+                missingVersions += url
+                error("A música não tem essa versão.")
+            }
         }
+        val sheet = withContext(Dispatchers.Default) { Sheet.fromExtract(json, url, songId, title, artist) }
         if (sheet.text.isBlank()) error("A página não tem cifra para violão/guitarra.")
         return sheet
     }
@@ -172,7 +281,7 @@ object Source {
             val songs = (0 until ss.length()).map {
                 val s = ss.getJSONObject(it)
                 val id = s.getString("id")
-                SongRef(id, s.getString("label"), prettySlug(id.substringBefore('/')))
+                SongRef(id, s.getString("label"), s.optString("artist").ifBlank { prettySlug(id.substringBefore('/')) })
             }
             val lists = (0 until ps.length()).map { ps.getJSONObject(it).let { p -> Version(p.getString("label"), p.getString("url")) } }
             return PlaylistPage(o.optString("title"), songs, lists)
@@ -192,7 +301,7 @@ object Source {
 
     fun isPlaylistLink(link: String): Boolean {
         val l = link.lowercase()
-        return "cifraclub" in l && ("playlist" in l || "/musico/" in l)
+        return "cifraclub" in l && ("playlist" in l || "/musico/" in l || "/repertorio/" in l || "/@" in l)
     }
 
     /** A page with a chord sheet: a <pre> block, or Ultimate Guitar's embedded store. */
@@ -201,7 +310,8 @@ object Source {
     /** Cifra Club keeps the bass version at <song>/tabs-baixo/. */
     fun bassUrl(songUrl: String) = songUrl.trimEnd('/') + "/tabs-baixo/"
 
-    fun simplifiedUrl(songUrl: String) = songUrl.trimEnd('/') + "/simplificada.html"
+    /** The acoustic version, which the song page does not link to. */
+    fun acousticUrl(songUrl: String) = songUrl.trimEnd('/') + "/acustica.html"
 }
 
 /**
@@ -244,12 +354,14 @@ internal object WebFetcher {
                     }
                 }
                 var lastCount = -1
+                var steady = 0
                 val poll = object : Runnable {
                     override fun run() {
                         if (done) return
                         val js = when (wait) {
                             Wait.CHORDS -> "(function(){var h=document.documentElement.outerHTML;return (document.querySelector('pre')||h.indexOf('wiki_tab')>=0)?h:null})()"
-                            // Lists render late: wait until the number of links stops changing.
+                            // Lists render late, after the page says it is complete: wait
+                            // until the number of links has stopped changing for a while.
                             Wait.LINKS -> "(function(){return document.readyState=='complete'?String(document.querySelectorAll('a[href]').length):null})()"
                         }
                         wv.evaluateJavascript(js) { v ->
@@ -259,7 +371,8 @@ internal object WebFetcher {
                                 finish(runCatching { JSONArray("[$v]").getString(0) }.getOrNull())
                             } else {
                                 val n = v.trim('"').toIntOrNull() ?: 0
-                                if (n > 0 && n == lastCount) {
+                                steady = if (n > 0 && n == lastCount) steady + 1 else 0
+                                if (steady >= 2) {
                                     wv.evaluateJavascript("document.documentElement.outerHTML") { h ->
                                         finish(runCatching { JSONArray("[$h]").getString(0) }.getOrNull())
                                     }

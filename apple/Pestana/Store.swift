@@ -28,6 +28,8 @@ final class Store {
         exec("CREATE TABLE IF NOT EXISTS prefs(song_id TEXT PRIMARY KEY, transpose INTEGER, speed INTEGER, simplify INTEGER, capo INTEGER)")
         exec("CREATE TABLE IF NOT EXISTS recents(song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, ts INTEGER)")
         exec("CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY, url TEXT NOT NULL)")
+        // The album each song came out on, as the site's search tells it (list sorting).
+        exec("CREATE TABLE IF NOT EXISTS song_info(song_id TEXT PRIMARY KEY, album TEXT, album_slug TEXT, year INTEGER)")
     }
 
     deinit { sqlite3_close(db) }
@@ -210,7 +212,8 @@ final class Store {
 
     func touchRecent(_ s: SongRef) {
         exec("INSERT OR REPLACE INTO recents VALUES(?,?,?,?)", [s.id, s.title, s.artist, now])
-        exec("DELETE FROM recents WHERE song_id NOT IN (SELECT song_id FROM recents ORDER BY ts DESC LIMIT 50)")
+        // Long enough a memory to sort a big playlist by when each song was last played.
+        exec("DELETE FROM recents WHERE song_id NOT IN (SELECT song_id FROM recents ORDER BY ts DESC LIMIT 1000)")
     }
 
     func recents(limit: Int = 20) -> [SongRef] {
@@ -220,6 +223,33 @@ final class Store {
     }
 
     func clearRecents() { exec("DELETE FROM recents") }
+
+    /// When each song was last opened (milliseconds), for the ones still remembered.
+    func lastPlayed() -> [String: Int] {
+        var m: [String: Int] = [:]
+        for (k, v) in query("SELECT song_id, ts FROM recents", [], { ($0.str(0), $0.int(1)) }) { m[k] = v }
+        return m
+    }
+
+    /// A song's album; all blank when the search was asked and knew none.
+    struct SongInfo {
+        var album: String
+        var albumSlug: String
+        var year: Int
+    }
+
+    func songInfo() -> [String: SongInfo] {
+        var m: [String: SongInfo] = [:]
+        let rows = query("SELECT song_id, album, album_slug, year FROM song_info", [], {
+            ($0.str(0), SongInfo(album: $0.str(1), albumSlug: $0.str(2), year: $0.int(3)))
+        })
+        for (k, v) in rows { m[k] = v }
+        return m
+    }
+
+    func saveSongInfo(_ songId: String, _ i: SongInfo) {
+        exec("INSERT OR REPLACE INTO song_info VALUES(?,?,?,?)", [songId, i.album, i.albumSlug, i.year])
+    }
 
     // MARK: - picture URLs
 

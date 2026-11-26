@@ -42,6 +42,19 @@ pub extern "system" fn Java_io_github_batatinha_pestana_Native_playlistLinks(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_io_github_batatinha_pestana_Native_artistPage(
+    mut env: JNIEnv,
+    _: JClass,
+    html: JString,
+    url: JString,
+) -> jstring {
+    let h = get(&mut env, &html);
+    let u = get(&mut env, &url);
+    let r = crate::html::artist_page(&h, &u);
+    out(&mut env, &r)
+}
+
+#[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_io_github_batatinha_pestana_Native_render(
     mut env: JNIEnv,
