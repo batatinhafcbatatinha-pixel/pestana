@@ -67,27 +67,31 @@ struct SongView: View {
     @State private var visible = Set<Int>()
     @State private var loaded = false
     @State private var current: SongRef?
-    @State private var pickedBass = false
+    @State private var bassSheet: Sheet?
+    @State private var bassMissing = false
 
     private var shown: SongRef { current ?? song }
 
     // MARK: derived
 
+    private var bass: Bool { settings.instrument == "bass" }
+    private var usingBass: Bool { bass && bassSheet != nil }
+
+    /// The sheet every tab derives from: Cifra Club's bass version
+    /// (<song>/tabs-baixo/) in bass mode, the main page otherwise.
+    private var base: Sheet? {
+        if !bass { return main }
+        if let b = bassSheet { return b }
+        return bassMissing ? main : nil
+    }
+
+    private static func isBassVersion(_ v: Version) -> Bool {
+        v.label.lowercased().contains("baixo") || v.url.contains("baixo") || v.url.contains("bass")
+    }
+
     private var sections: [SheetSection] {
-        guard let m = main else { return [] }
+        guard let m = base else { return [] }
         var out = [SheetSection(label: "Principal", url: m.url, view: 0)]
-        let isBass = { (v: Version) in v.label.lowercased().contains("baixo") || v.url.contains("baixo") || v.url.contains("bass") }
-        let bass = settings.instrument == "bass"
-        if bass {
-            let listed = m.versions.filter(isBass)
-            if !listed.isEmpty {
-                for (i, v) in listed.enumerated() {
-                    out.append(SheetSection(label: i == 0 ? "Baixo" : v.label, url: v.url, view: 0, fallback: true))
-                }
-            } else if m.url.hasPrefix(siteURL) {
-                out.append(SheetSection(label: "Baixo", url: Source.bassURL(m.url), view: 0, fallback: true))
-            }
-        }
         let simp = m.versions.first { $0.label.lowercased().contains("simplif") || $0.url.contains("simplificada") }
         out.append(SheetSection(label: "Simplificada", url: simp?.url ?? (m.url.hasPrefix(siteURL) ? Source.simplifiedURL(m.url) : nil), view: 0, simplified: true, fallback: true))
         if let f = flags {
@@ -95,7 +99,7 @@ struct SongView: View {
             if f.hasSolos { out.append(SheetSection(label: "Solos", url: m.url, view: 2)) }
             if f.hasRiffs { out.append(SheetSection(label: "Riffs", url: m.url, view: 3)) }
         }
-        for v in m.versions where !v.label.lowercased().contains("simplif") && !v.url.contains("simplificada") && !v.label.lowercased().contains("principal") && !(bass && isBass(v)) {
+        for v in m.versions where !v.label.lowercased().contains("simplif") && !v.url.contains("simplificada") && !v.label.lowercased().contains("principal") && !SongView.isBassVersion(v) {
             out.append(SheetSection(label: v.label.prefix(1).uppercased() + v.label.dropFirst(), url: v.url, view: 0))
         }
         return out
@@ -109,15 +113,18 @@ struct SongView: View {
     }
 
     private var source: Sheet? {
-        guard let m = main, let s = section else { return nil }
+        guard let m = base, let s = section else { return nil }
         if derived || s.url == m.url { return m }
         return s.url.flatMap { extra[$0] }
     }
 
     private var capo: Int { max(0, prefs.capo) }
 
+    /// A bass version is mostly tablature: keep it visible there.
+    private var showTabs: Bool { settings.showTabs || (usingBass && (section?.view ?? 0) == 0) }
+
     private var renderKey: String {
-        "\(source?.url ?? "")|\(source?.text.count ?? 0)|\(prefs.transpose - capo)|\(prefs.simplify || (derived && section?.simplified == true))|\(section?.view ?? 0)|\(section?.label ?? "")|\(derived)|\(settings.showTabs)|\(settings.accidentals)|\(cols)"
+        "\(source?.url ?? "")|\(source?.text.count ?? 0)|\(prefs.transpose - capo)|\(prefs.simplify || (derived && section?.simplified == true))|\(section?.view ?? 0)|\(derived)|\(showTabs)|\(settings.accidentals)|\(cols)"
     }
 
     // MARK: body
@@ -154,18 +161,14 @@ struct SongView: View {
             }
         }
         .task(id: shown.id) { await load(force: false) }
-        .task(id: main?.url) {
-            guard let m = main else { return }
+        .task(id: "\(main?.url ?? "")|\(bass)") { await loadBass() }
+        .onChange(of: bass) { _ in selected = 0 }
+        .task(id: base?.url) {
+            guard let m = base else { return }
             let r = await Task.detached { Rendered.parse(Core.render(m.text, key: m.key, transpose: 0, simplify: false, view: 0, showTabs: true, accidentals: 0, cols: 1000)) }.value
             flags = r
         }
         .task(id: section?.url) { await loadSection() }
-        .onChange(of: sections.count) { _ in
-            if settings.instrument == "bass", !pickedBass, sections.count > 1, sections[1].label == "Baixo" {
-                selected = 1
-                pickedBass = true
-            }
-        }
         .task(id: renderKey) { await render() }
         .onChange(of: prefs) { model.store.savePrefs(shown.id, $0) }
         .onAppear { keepAwake(settings.keepScreenOn) }
@@ -200,7 +203,7 @@ struct SongView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         infoLine.id(-3)
-                        if settings.instrument == "bass" && (!sections.contains(where: { $0.label == "Baixo" }) || (section?.label == "Baixo" && derived)) {
+                        if bass && bassMissing {
                             Text("Esta cifra não tem versão para baixo no site. Mostrando a cifra com diagramas de baixo.")
                                 .font(.caption).foregroundColor(t.muted).padding(.top, 4)
                         }
@@ -422,12 +425,15 @@ struct SongView: View {
     }
 
     private func colorRow(_ label: String, _ names: [String], selected: Int, set: @escaping (Int) -> Void) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Text(label).font(.footnote).foregroundColor(t.muted)
-                ForEach(names.indices, id: \.self) { i in Pill(text: names[i], selected: selected == i) { set(i) } }
+        HStack(spacing: 8) {
+            Text(label).font(.footnote).foregroundColor(t.muted).frame(width: 64, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(names.indices, id: \.self) { i in Pill(text: names[i], selected: selected == i) { set(i) } }
+                }
             }
         }
+        .padding(.vertical, 6)
     }
 
     private var morePanel: some View {
@@ -490,15 +496,28 @@ struct SongView: View {
             }
         }
         guard let s = sheet else { return }
-        if force { extra = [:]; failed = [] }
+        if force { extra = [:]; failed = []; bassSheet = nil; bassMissing = false }
         main = s
         let ref = SongRef(id: shown.id, title: s.title.isEmpty ? shown.title : s.title, artist: s.artist.isEmpty ? shown.artist : s.artist)
         model.store.touchRecent(ref)
         model.store.updateSongMeta(shown.id, title: ref.title, artist: ref.artist)
     }
 
+    private func loadBass() async {
+        guard bass, let m = main, bassSheet == nil, !bassMissing else { return }
+        let url = m.versions.first(where: SongView.isBassVersion)?.url ?? (m.url.hasPrefix(siteURL) ? Source.bassURL(m.url) : nil)
+        guard let url else { bassMissing = true; return }
+        if let s = model.store.sheet(url) { bassSheet = s; return }
+        if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist) {
+            model.store.saveSheet(s)
+            bassSheet = s
+        } else {
+            bassMissing = true
+        }
+    }
+
     private func loadSection() async {
-        guard let m = main, let url = section?.url, url != m.url, extra[url] == nil, !failed.contains(url) else { return }
+        guard let m = base, let url = section?.url, url != m.url, extra[url] == nil, !failed.contains(url) else { return }
         if let s = model.store.sheet(url) { extra[url] = s; return }
         if let s = try? await Source.fetchSheet(url, songId: shown.id, title: m.title, artist: m.artist) {
             model.store.saveSheet(s)
@@ -511,7 +530,7 @@ struct SongView: View {
     private func render() async {
         guard let s = source else { return }
         let (text, key) = (s.text, s.key)
-        let (tr, simp, view, tabs, acc, c) = (prefs.transpose - capo, prefs.simplify || (derived && section?.simplified == true), section?.view ?? 0, settings.showTabs || (section?.label == "Baixo" && !derived), settings.accidentals, cols)
+        let (tr, simp, view, tabs, acc, c) = (prefs.transpose - capo, prefs.simplify || (derived && section?.simplified == true), section?.view ?? 0, showTabs, settings.accidentals, cols)
         let r = await Task.detached {
             Rendered.parse(Core.render(text, key: key, transpose: tr, simplify: simp, view: view, showTabs: tabs, accidentals: acc, cols: c))
         }.value
@@ -527,7 +546,8 @@ struct SongView: View {
         failed = []
         rendered = Rendered()
         loaded = false
-        pickedBass = false
+        bassSheet = nil
+        bassMissing = false
         current = s
     }
 

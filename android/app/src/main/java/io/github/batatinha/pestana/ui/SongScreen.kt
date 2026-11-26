@@ -143,6 +143,8 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     var selected by rememberSaveable(song.id) { mutableStateOf(0) }
     val extra = remember(song.id) { mutableStateMapOf<String, Sheet>() }
     val failed = remember(song.id) { mutableStateMapOf<String, Boolean>() }
+    var bassSheet by remember(song.id) { mutableStateOf<Sheet?>(null) }
+    var bassMissing by remember(song.id) { mutableStateOf(false) }
     var rendered by remember(song.id) { mutableStateOf<Rendered?>(null) }
     var chrome by remember { mutableStateOf(true) }
     var panel by remember { mutableStateOf(Panel.NONE) }
@@ -163,7 +165,7 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                 .getOrElse { error = it.message ?: "Erro ao abrir a cifra."; return }
         }
         main = sheet
-        if (force) { extra.clear(); failed.clear() }
+        if (force) { extra.clear(); failed.clear(); bassSheet = null; bassMissing = false }
         val ref = SongRef(song.id, sheet.title.ifBlank { song.title }, sheet.artist.ifBlank { song.artist })
         state.db.touchRecent(ref)
         state.db.updateSongMeta(song.id, ref.title, ref.artist)
@@ -171,28 +173,42 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
 
     LaunchedEffect(song.id) { load(false) }
 
-    // Which derived sections exist (tabs, solos, riffs) is known from the main text.
-    LaunchedEffect(main) {
+    // Bass mode reads Cifra Club's bass version (<song>/tabs-baixo/) as the base
+    // sheet: Principal, Simplificada, Acordes, Solos and Riffs all come from it.
+    val bass = settings.instrument == "bass"
+    LaunchedEffect(main, bass) {
         val m = main ?: return@LaunchedEffect
-        flags = withContext(Dispatchers.Default) { Rendered.parse(Native.render(m.text, m.key, 0, false, 0, true, 0, 1000)) }
+        if (!bass || bassSheet != null || bassMissing) return@LaunchedEffect
+        val url = m.versions.firstOrNull(::isBassVersion)?.url
+            ?: if (m.url.startsWith(Source.SITE)) Source.bassUrl(m.url) else null
+        if (url == null) {
+            bassMissing = true
+            return@LaunchedEffect
+        }
+        val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist) }
+            .onSuccess { state.db.saveSheet(it) }.getOrNull()
+        if (s != null) bassSheet = s else bassMissing = true
+    }
+    LaunchedEffect(bass) { selected = 0 }
+    val usingBass = bass && bassSheet != null
+    val base: Sheet? = when {
+        !bass -> main
+        bassSheet != null -> bassSheet
+        bassMissing -> main
+        else -> null // still loading the bass version
     }
 
-    val bass = settings.instrument == "bass"
-    val sections = remember(main, flags, bass) {
-        val m = main ?: return@remember emptyList()
+    // Which derived sections exist (tabs, solos, riffs) is known from the base text.
+    LaunchedEffect(base) {
+        val b = base ?: return@LaunchedEffect
+        flags = withContext(Dispatchers.Default) { Rendered.parse(Native.render(b.text, b.key, 0, false, 0, true, 0, 1000)) }
+    }
+
+    val sections = remember(base, flags) {
+        val m = base ?: return@remember emptyList()
         val f = flags
-        val isBass = { v: io.github.batatinha.pestana.Version -> v.label.contains("baixo", true) || v.url.contains("baixo", true) || v.url.contains("bass", true) }
         buildList {
             add(Section("Principal", m.url, 0))
-            // Bass players see the bass version right away.
-            if (bass) {
-                val listed = m.versions.filter(isBass)
-                if (listed.isNotEmpty()) {
-                    listed.forEachIndexed { i, v -> add(Section(if (i == 0) "Baixo" else v.label, v.url, 0, fallback = true)) }
-                } else if (m.url.startsWith(Source.SITE)) {
-                    add(Section("Baixo", Source.bassUrl(m.url), 0, fallback = true))
-                }
-            }
             val simp = m.versions.firstOrNull { it.label.contains("simplif", true) || it.url.contains("simplificada") }
             val simpUrl = simp?.url ?: if (m.url.startsWith(Source.SITE)) Source.simplifiedUrl(m.url) else null
             add(Section("Simplificada", simpUrl, 0, simplified = true))
@@ -201,23 +217,15 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
             if (f != null && f.hasRiffs) add(Section("Riffs", m.url, 3))
             m.versions.filter { v ->
                 !v.label.contains("simplif", true) && !v.url.contains("simplificada") && !v.label.contains("principal", true) &&
-                    !(bass && isBass(v))
+                    !isBassVersion(v)
             }.forEach { add(Section(it.label.replaceFirstChar { c -> c.uppercase() }, it.url, 0)) }
         }
     }
     val sec = sections.getOrNull(selected) ?: sections.firstOrNull()
-    // Open the bass version first when the instrument is bass.
-    var pickedBass by remember(song.id) { mutableStateOf(false) }
-    LaunchedEffect(sections, bass) {
-        if (bass && !pickedBass && sections.size > 1 && sections[1].label == "Baixo") {
-            selected = 1
-            pickedBass = true
-        }
-    }
 
     // Load another version's page when its tab is chosen.
-    LaunchedEffect(sec?.url, main) {
-        val m = main ?: return@LaunchedEffect
+    LaunchedEffect(sec?.url, base) {
+        val m = base ?: return@LaunchedEffect
         val url = sec?.url ?: return@LaunchedEffect
         if (url == m.url || extra.containsKey(url) || failed.containsKey(url)) return@LaunchedEffect
         val s = state.db.sheet(url) ?: runCatching { Source.fetchSheet(ctx, url, song.id, m.title, m.artist) }
@@ -228,13 +236,15 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     val m = main
     val derived = sec != null && sec.fallback && (sec.url == null || failed.containsKey(sec.url))
     val source: Sheet? = when {
-        m == null || sec == null -> null
-        derived || sec.url == m.url -> m
+        base == null || sec == null -> null
+        derived || sec.url == base.url -> base
         else -> extra[sec.url]
     }
     val simplify = prefs.simplify || (derived && sec?.simplified == true)
     val capo = prefs.capo.coerceAtLeast(0)
     val shapeShift = prefs.transpose - capo
+    // A bass version is mostly tablature: keep it visible there.
+    val showTabs = settings.showTabs || (usingBass && sec?.view == 0)
 
     // Monospace column count for the current width and font size.
     val measurer = rememberTextMeasurer()
@@ -242,11 +252,11 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     val charW = remember(settings.fontSize) { measurer.measure("0".repeat(40), mono).size.width / 40f }
     var cols by remember { mutableStateOf(0) }
 
-    LaunchedEffect(source, shapeShift, simplify, sec?.view, sec?.label, derived, settings.showTabs, settings.accidentals, cols) {
+    LaunchedEffect(source, shapeShift, simplify, sec?.view, showTabs, settings.accidentals, cols) {
         val s = source ?: return@LaunchedEffect
         if (cols <= 0) return@LaunchedEffect
         rendered = withContext(Dispatchers.Default) {
-            Rendered.parse(Native.render(s.text, s.key, shapeShift, simplify, sec?.view ?: 0, settings.showTabs || (sec?.label == "Baixo" && !derived), settings.accidentals, cols))
+            Rendered.parse(Native.render(s.text, s.key, shapeShift, simplify, sec?.view ?: 0, showTabs, settings.accidentals, cols))
         }
     }
 
@@ -363,9 +373,8 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                             .padding(horizontal = 16.dp),
                     ) {
                         Spacer(Modifier.height(10.dp))
-                        InfoLine(m, rendered, prefs, capo) { chrome = true; panel = Panel.KEY }
-                        val bassSec = sections.firstOrNull { it.label == "Baixo" }
-                        if (bass && (bassSec == null || (sec == bassSec && derived))) {
+                        InfoLine(base ?: m, rendered, prefs, capo) { chrome = true; panel = Panel.KEY }
+                        if (bass && bassMissing) {
                             Text(
                                 "Esta cifra não tem versão para baixo no site. Mostrando a cifra com diagramas de baixo.",
                                 color = t.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp),
@@ -551,15 +560,14 @@ private fun Controls(
                 Panel.TEXT -> Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                     Stepper("Tamanho", "${s.fontSize.toInt()}", { s.putFontSize(s.fontSize - 1) }, { s.putFontSize(s.fontSize + 1) })
                     Stepper("Espaçamento", "%.2f".format(s.lineSpacing), { s.putLineSpacing(s.lineSpacing - 0.05f) }, { s.putLineSpacing(s.lineSpacing + 0.05f) })
-                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Acordes", color = t.muted, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
+                    Spacer(Modifier.height(6.dp))
+                    OptionRow("Acordes") {
                         ChordColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.chordColor == i) { s.putChordColor(i) } }
                     }
-                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Letra", color = t.muted, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
+                    OptionRow("Letra") {
                         LyricColors.all.forEachIndexed { i, (name, _) -> Pill(name, s.lyricColor == i) { s.putLyricColor(i) } }
                     }
-                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OptionRow("Tema") {
                         Pill("Sistema", s.theme == "auto") { s.putTheme("auto") }
                         Themes.all.forEach { th -> Pill(th.name, s.theme == th.id) { s.putTheme(th.id) } }
                     }
@@ -662,5 +670,18 @@ private fun diagnostic(s: Sheet): String = buildString {
         val odd = c != '\n' && (c.code < 32 || c.code in 0x7f..0xa0 || type == Character.FORMAT ||
             type == Character.SPACE_SEPARATOR && c != ' ')
         if (odd) append("<U+").append(c.code.toString(16).uppercase().padStart(4, '0')).append('>') else append(c)
+    }
+}
+
+private fun isBassVersion(v: io.github.batatinha.pestana.Version) =
+    v.label.contains("baixo", true) || v.url.contains("baixo", true) || v.url.contains("bass", true)
+
+/** A labelled, horizontally scrolling row of pills with room to breathe. */
+@Composable
+private fun OptionRow(label: String, content: @Composable () -> Unit) {
+    val t = LocalReading.current
+    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = t.muted, fontSize = 13.sp, modifier = Modifier.width(64.dp))
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { content() }
     }
 }
