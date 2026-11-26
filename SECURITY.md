@@ -38,6 +38,10 @@ Cada release também traz os checksums SHA-256 em `SHA256SUMS.txt` e os
 pacotes de atestado (`attestation-*.sigstore.json`), para conferir offline
 ou com outras ferramentas do Sigstore.
 
+Os APKs são assinados com o certificado cuja impressão digital SHA-256 é
+`D0:B6:74:67:8D:72:D5:56:EA:74:91:80:BC:34:BF:90:41:C1:33:C2:BD:65:C5:0B:9B:06:E9:7F:2D:F0:47:40`.
+Para conferir: `apksigner verify --print-certs pestana-<versão>-android.apk`.
+
 ## Verificações automáticas
 
 - [Build](https://github.com/batatinhafcbatatinha-pixel/pestana/actions/workflows/build.yml):
