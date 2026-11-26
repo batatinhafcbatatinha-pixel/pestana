@@ -195,23 +195,6 @@ fun PlaylistScreen(state: AppState, id: Long, initialName: String) {
                 Pill("Apagar playlist", false) { deleting = true }
             }
         } else if (songs.isNotEmpty()) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    enabled = shown.isNotEmpty(),
-                    onClick = { state.go(Screen.Song(shown.first(), shown)) },
-                    colors = ButtonDefaults.buttonColors(containerColor = t.chord, contentColor = t.bg),
-                ) {
-                    Icon(Ic.Play, null, Modifier.size(18.dp)); Spacer(Modifier.size(6.dp)); Text("Tocar em sequência")
-                }
-                Spacer(Modifier.size(8.dp))
-                val dl = state.download
-                val missing = remember(songs, state.dataVersion, dl) { songs.count { !it.isLocal && !state.db.hasSheet(it.url) } }
-                when {
-                    dl != null -> Pill("Baixando ${dl.first}/${dl.second}…", true) {}
-                    missing > 0 -> Pill("Baixar offline ($missing)", false) { state.downloadForOffline(songs) }
-                    else -> Pill("✓ Disponível offline", false) {}
-                }
-            }
             order.bar()
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {

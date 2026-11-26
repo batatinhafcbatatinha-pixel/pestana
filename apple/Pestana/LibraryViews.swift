@@ -132,23 +132,6 @@ struct PlaylistView: View {
         let untouched = order.untouched(songs)
         return List {
             if !songs.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        NavigationLink(value: Route.song(shown.first ?? songs[0], shown.isEmpty ? songs : shown)) {
-                            Label("Tocar em sequência", systemImage: "play.fill").font(.subheadline.weight(.semibold))
-                                .padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(Capsule().fill(t.chord)).foregroundColor(t.bg)
-                        }.buttonStyle(.plain)
-                        if let dl = model.download {
-                            Pill(text: "Baixando \(dl.0)/\(dl.1)…", selected: true) {}
-                        } else {
-                            let missing = songs.filter { !$0.isLocal && !model.store.hasSheet($0.url) }.count
-                            Pill(text: missing > 0 ? "Baixar offline (\(missing))" : "✓ Disponível offline", selected: false) {
-                                if missing > 0 { model.downloadForOffline(songs) }
-                            }
-                        }
-                    }
-                }.rowBackground(t)
                 SongOrderBar(order: order, songs: songs).rowBackground(t)
                 if shown.isEmpty {
                     EmptyStateView(title: "Nenhuma música com esses filtros", message: "Os filtros olham as cifras salvas no aparelho.").rowBackground(t)
@@ -175,6 +158,7 @@ struct PlaylistView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
+                    Button { model.downloadForOffline(songs) } label: { Label("Baixar para usar offline", systemImage: "arrow.down.circle") }
                     Button { newName = name; renaming = true } label: { Label("Renomear", systemImage: "pencil") }
                     Button(role: .destructive) { deleting = true } label: { Label("Apagar playlist", systemImage: "trash") }
                 } label: { Image(systemName: "ellipsis.circle") }
