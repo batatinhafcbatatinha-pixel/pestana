@@ -196,6 +196,8 @@ struct SongPrefs: Equatable {
     var speed = 8
     var simplify = false
     var capo = 0
+    /// The version last opened ("Simplificada", "Solos"…); empty is Principal.
+    var section = ""
 }
 
 struct Playlist: Hashable, Identifiable {

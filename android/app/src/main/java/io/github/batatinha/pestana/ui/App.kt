@@ -46,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -146,6 +147,7 @@ fun TopBar(
     title: String,
     subtitle: String? = null,
     onBack: (() -> Unit)? = null,
+    onSubtitle: (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     val t = LocalReading.current
@@ -161,7 +163,10 @@ fun TopBar(
         Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, color = t.text)
             if (!subtitle.isNullOrBlank()) {
-                Text(subtitle, fontSize = 13.sp, color = t.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    subtitle, fontSize = 13.sp, color = t.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = if (onSubtitle != null) Modifier.clickable(onClick = onSubtitle) else Modifier,
+                )
             }
         }
         actions()
@@ -288,13 +293,36 @@ fun Pill(text: String, selected: Boolean, onClick: () -> Unit) {
 
 /** Choose (or create) a playlist and add the song to it. */
 @Composable
-fun AddToPlaylistDialog(state: AppState, song: SongRef, onDismiss: () -> Unit) {
+fun AddToPlaylistDialog(state: AppState, song: SongRef, onDismiss: () -> Unit) =
+    AddToPlaylistDialog(state, listOf(song)) { onDismiss() }
+
+/**
+ * Choose (or create) a playlist and add the songs to it; `exclude` is left out
+ * of the choices (the playlist they come from). `onDone` tells whether they were added.
+ */
+@Composable
+fun AddToPlaylistDialog(state: AppState, songs: List<SongRef>, exclude: Long? = null, onDone: (Boolean) -> Unit) {
     val t = LocalReading.current
-    val lists = remember(state.dataVersion) { state.db.playlists() }
+    val lists = remember(state.dataVersion, exclude) { state.db.playlists().filter { it.id != exclude } }
+    // A song goes into a playlist only once: what a playlist already has is left out.
+    val having = remember(state.dataVersion, songs) { state.db.playlistsHaving(songs.map { it.id }) }
     var creating by rememberSaveable { mutableStateOf(lists.isEmpty()) }
     var name by rememberSaveable { mutableStateOf("") }
+    fun add(id: Long, listName: String) {
+        val has = having[id].orEmpty()
+        val missing = songs.filter { it.id !in has }
+        missing.forEach { state.db.addToPlaylist(id, it) }
+        state.changed()
+        val already = songs.size - missing.size
+        state.toast = when {
+            missing.size == 1 && already == 0 -> "Adicionada a $listName"
+            already == 0 -> "${missing.size} músicas adicionadas a $listName"
+            else -> "${missing.size} adicionadas a $listName ($already já estavam)"
+        }
+        onDone(true)
+    }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { onDone(false) },
         containerColor = t.surface,
         title = { Text(if (creating) "Nova playlist" else "Adicionar à playlist", color = t.text) },
         text = {
@@ -303,11 +331,17 @@ fun AddToPlaylistDialog(state: AppState, song: SongRef, onDismiss: () -> Unit) {
             } else {
                 LazyColumn {
                     items(lists, key = { it.id }) { p ->
-                        ListRow(p.name, "${p.count} músicas", leading = { Monogram(p.name, Ic.Playlist, round = false) }) {
-                            state.db.addToPlaylist(p.id, song)
-                            state.changed()
-                            state.toast = "Adicionada a ${p.name}"
-                            onDismiss()
+                        val full = having[p.id].orEmpty().size >= songs.distinctBy { it.id }.size
+                        val sub = when {
+                            full && songs.size == 1 -> "Já está nesta playlist"
+                            full -> "Já estão todas nesta playlist"
+                            p.count == 1 -> "1 música"
+                            else -> "${p.count} músicas"
+                        }
+                        Box(Modifier.alpha(if (full) 0.45f else 1f)) {
+                            ListRow(p.name, sub, leading = { Monogram(p.name, if (full) Ic.Check else Ic.Playlist, round = false) }) {
+                                if (!full) add(p.id, p.name)
+                            }
                         }
                     }
                 }
@@ -316,17 +350,13 @@ fun AddToPlaylistDialog(state: AppState, song: SongRef, onDismiss: () -> Unit) {
         confirmButton = {
             if (creating) {
                 TextButton(enabled = name.isNotBlank(), onClick = {
-                    val id = state.db.createPlaylist(name.trim())
-                    state.db.addToPlaylist(id, song)
-                    state.changed()
-                    state.toast = "Adicionada a ${name.trim()}"
-                    onDismiss()
+                    add(state.db.createPlaylist(name.trim()), name.trim())
                 }) { Text("Criar e adicionar") }
             } else {
                 TextButton(onClick = { creating = true }) { Text("Nova playlist") }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        dismissButton = { TextButton(onClick = { onDone(false) }) { Text("Cancelar") } },
     )
 }
 

@@ -12,7 +12,7 @@ import org.json.JSONObject
  * downloaded sheets (offline cache), favorites, playlists, per-song settings
  * and history. No account, no server.
  */
-class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
+class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 5) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -29,7 +29,7 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
             """CREATE TABLE playlist_items(playlist INTEGER NOT NULL, pos INTEGER, song_id TEXT NOT NULL,
                title TEXT, artist TEXT, PRIMARY KEY(playlist, song_id))""",
         )
-        db.execSQL("CREATE TABLE prefs(song_id TEXT PRIMARY KEY, transpose INTEGER, speed INTEGER, simplify INTEGER, capo INTEGER)")
+        db.execSQL("CREATE TABLE prefs(song_id TEXT PRIMARY KEY, transpose INTEGER, speed INTEGER, simplify INTEGER, capo INTEGER, section TEXT)")
         db.execSQL("CREATE TABLE recents(song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, ts INTEGER)")
         createImages(db)
         createAlbumSongs(db)
@@ -58,6 +58,8 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
         if (oldVersion < 2) createImages(db)
         if (oldVersion < 3) createAlbumSongs(db)
         if (oldVersion < 4) createSongInfo(db)
+        // The version (Principal, Simplificada…) last opened of each song.
+        if (oldVersion < 5) db.execSQL("ALTER TABLE prefs ADD COLUMN section TEXT")
     }
 
     fun allImages(): Map<String, String> = readableDatabase.rawQuery("SELECT key, url FROM images", null).use { c ->
@@ -161,6 +163,10 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
         )
     }
 
+    /** Whether the song is in the library: a favorite, in a playlist or on a favorite album. */
+    fun inLibrary(songId: String): Boolean =
+        readableDatabase.rawQuery("SELECT 1 FROM ($keptIds) WHERE id = ?", arrayOf(songId)).use { it.moveToFirst() }
+
     /** Songs that should always be on the phone: favorites, playlists, favorite albums. */
     fun keptSongs(): List<SongRef> = readableDatabase.rawQuery(
         """SELECT id, title, sub FROM favs WHERE kind = 'song'
@@ -241,6 +247,19 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
         }, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
+    /** Which of `songIds` each playlist already has (playlists with none are left out). */
+    fun playlistsHaving(songIds: Collection<String>): Map<Long, Set<String>> {
+        if (songIds.isEmpty()) return emptyMap()
+        val marks = songIds.joinToString(",") { "?" }
+        return readableDatabase.rawQuery(
+            "SELECT playlist, song_id FROM playlist_items WHERE song_id IN ($marks)", songIds.toTypedArray(),
+        ).use { c ->
+            val m = HashMap<Long, MutableSet<String>>()
+            while (c.moveToNext()) m.getOrPut(c.getLong(0)) { HashSet() } += c.getString(1)
+            m
+        }
+    }
+
     fun removeFromPlaylist(id: Long, songId: String) {
         writableDatabase.delete("playlist_items", "playlist = ? AND song_id = ?", arrayOf(id.toString(), songId))
     }
@@ -261,13 +280,13 @@ class Db(context: Context) : SQLiteOpenHelper(context, "pestana.db", null, 4) {
     // ---- per-song settings ----
 
     fun prefs(songId: String): SongPrefs = readableDatabase.rawQuery(
-        "SELECT transpose, speed, simplify, capo FROM prefs WHERE song_id = ?", arrayOf(songId),
-    ).use { c -> if (c.moveToFirst()) SongPrefs(c.getInt(0), c.getInt(1), c.getInt(2) != 0, c.getInt(3)) else SongPrefs() }
+        "SELECT transpose, speed, simplify, capo, section FROM prefs WHERE song_id = ?", arrayOf(songId),
+    ).use { c -> if (c.moveToFirst()) SongPrefs(c.getInt(0), c.getInt(1), c.getInt(2) != 0, c.getInt(3), c.getString(4) ?: "") else SongPrefs() }
 
     fun savePrefs(songId: String, p: SongPrefs) {
         writableDatabase.insertWithOnConflict("prefs", null, ContentValues().apply {
             put("song_id", songId); put("transpose", p.transpose); put("speed", p.speed)
-            put("simplify", if (p.simplify) 1 else 0); put("capo", p.capo)
+            put("simplify", if (p.simplify) 1 else 0); put("capo", p.capo); put("section", p.section)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 

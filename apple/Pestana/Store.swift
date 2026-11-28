@@ -26,6 +26,8 @@ final class Store {
         exec("CREATE TABLE IF NOT EXISTS playlists(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, created INTEGER)")
         exec("CREATE TABLE IF NOT EXISTS playlist_items(playlist INTEGER NOT NULL, pos INTEGER, song_id TEXT NOT NULL, title TEXT, artist TEXT, PRIMARY KEY(playlist, song_id))")
         exec("CREATE TABLE IF NOT EXISTS prefs(song_id TEXT PRIMARY KEY, transpose INTEGER, speed INTEGER, simplify INTEGER, capo INTEGER)")
+        // The version (Principal, Simplificada…) last opened of each song; fails harmlessly once it exists.
+        exec("ALTER TABLE prefs ADD COLUMN section TEXT")
         exec("CREATE TABLE IF NOT EXISTS recents(song_id TEXT PRIMARY KEY, title TEXT, artist TEXT, ts INTEGER)")
         exec("CREATE TABLE IF NOT EXISTS images(key TEXT PRIMARY KEY, url TEXT NOT NULL)")
         // The album each song came out on, as the site's search tells it (list sorting).
@@ -184,6 +186,23 @@ final class Store {
         exec("INSERT OR IGNORE INTO playlist_items VALUES(?,?,?,?,?)", [id, pos, s.id, s.title, s.artist])
     }
 
+    /// Which of `songIds` each playlist already has (playlists with none are left out).
+    func playlistsHaving(_ songIds: [String]) -> [Int64: Set<String>] {
+        guard !songIds.isEmpty else { return [:] }
+        let marks = songIds.map { _ in "?" }.joined(separator: ",")
+        var out: [Int64: Set<String>] = [:]
+        let rows = query("SELECT playlist, song_id FROM playlist_items WHERE song_id IN (\(marks))", songIds.map { $0 as Any? }) {
+            ($0.int64(0), $0.str(1))
+        }
+        for (p, s) in rows { out[p, default: []].insert(s) }
+        return out
+    }
+
+    /// Whether the song is in the library: a favorite or in a playlist.
+    func inLibrary(_ songId: String) -> Bool {
+        isFav("song", songId) || !query("SELECT 1 FROM playlist_items WHERE song_id = ? LIMIT 1", [songId]) { _ in 1 }.isEmpty
+    }
+
     func removeFromPlaylist(_ id: Int64, _ songId: String) {
         exec("DELETE FROM playlist_items WHERE playlist = ? AND song_id = ?", [id, songId])
     }
@@ -199,13 +218,14 @@ final class Store {
     // MARK: - per-song settings
 
     func prefs(_ id: String) -> SongPrefs {
-        query("SELECT transpose, speed, simplify, capo FROM prefs WHERE song_id = ?", [id]) {
-            SongPrefs(transpose: $0.int(0), speed: max(1, $0.int(1)), simplify: $0.int(2) != 0, capo: $0.int(3))
+        query("SELECT transpose, speed, simplify, capo, section FROM prefs WHERE song_id = ?", [id]) {
+            SongPrefs(transpose: $0.int(0), speed: max(1, $0.int(1)), simplify: $0.int(2) != 0, capo: $0.int(3), section: $0.str(4))
         }.first ?? SongPrefs()
     }
 
     func savePrefs(_ id: String, _ p: SongPrefs) {
-        exec("INSERT OR REPLACE INTO prefs VALUES(?,?,?,?,?)", [id, p.transpose, p.speed, p.simplify, p.capo])
+        exec("INSERT OR REPLACE INTO prefs(song_id, transpose, speed, simplify, capo, section) VALUES(?,?,?,?,?,?)",
+             [id, p.transpose, p.speed, p.simplify, p.capo, p.section])
     }
 
     // MARK: - history

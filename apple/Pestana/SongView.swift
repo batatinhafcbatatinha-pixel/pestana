@@ -56,6 +56,9 @@ struct SongView: View {
     @State private var fav = false
     @State private var flags: Rendered?
     @State private var selected = 0
+    /// A version chosen on this visit; until then, a library song opens on the version last used.
+    @State private var picked = false
+    @State private var inLibrary = false
     @State private var extra: [String: Sheet] = [:]
     @State private var failed = Set<String>()
     @State private var rendered = Rendered()
@@ -142,7 +145,13 @@ struct SongView: View {
             if sections.count > 1 {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(sections.indices, id: \.self) { i in Pill(text: sections[i].label, selected: i == selected) { selected = i } }
+                        ForEach(sections.indices, id: \.self) { i in
+                            Pill(text: sections[i].label, selected: i == selected) {
+                                selected = i
+                                picked = true
+                                prefs.section = i == 0 ? "" : sections[i].label
+                            }
+                        }
                     }
                     .padding(.horizontal, 16).padding(.vertical, 6)
                 }
@@ -178,7 +187,9 @@ struct SongView: View {
         .task(id: shown.id) { await load(force: false) }
         .task(id: "\(main?.url ?? "")|\(bass)") { await loadBass() }
         .task(id: "\(main?.url ?? "")|\(main?.versions.count ?? 0)") { await findAcoustic() }
-        .onChange(of: bass) { _ in selected = 0 }
+        .onChange(of: bass) { _ in selected = 0; restoreSection() }
+        // The versions show up one by one (solos and riffs once read, the acoustic one once found).
+        .onChange(of: sections.map(\.label)) { _ in restoreSection() }
         .task(id: base?.url) {
             guard let m = base else { return }
             let r = await Task.detached { Rendered.parse(Core.render(m.text, key: m.key, transpose: 0, simplify: false, view: 0, showTabs: true, accidentals: 0, cols: 1000)) }.value
@@ -218,6 +229,16 @@ struct SongView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
+                        // The artist's name opens the artist's page (imports have none).
+                        if !shown.artistSlug.isEmpty {
+                            NavigationLink(value: Route.artist(ArtistRef(slug: shown.artistSlug, name: main?.artist.isEmpty == false ? main!.artist : shown.artist))) {
+                                Text(main?.artist.isEmpty == false ? main!.artist : shown.artist)
+                                    .font(.subheadline.weight(.semibold)).foregroundColor(t.chord)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 10)
+                            .id(-4)
+                        }
                         infoLine.id(-3)
                         if bass && bassMissing {
                             Text("Esta cifra não tem versão para baixo no site. Mostrando a cifra com diagramas de baixo.")
@@ -506,6 +527,7 @@ struct SongView: View {
         if !loaded {
             prefs = model.store.prefs(shown.id)
             fav = model.store.isFav("song", shown.id)
+            inLibrary = model.store.inLibrary(shown.id)
             loaded = true
         }
         let url = shown.url
@@ -560,6 +582,13 @@ struct SongView: View {
         main = known
     }
 
+    /// A library song opens on the version last used, once that version is known.
+    private func restoreSection() {
+        guard !picked, inLibrary, !prefs.section.isEmpty,
+              let i = sections.firstIndex(where: { $0.label == prefs.section }) else { return }
+        selected = i
+    }
+
     private func loadSection() async {
         guard let m = base, let url = section?.url, url != m.url, extra[url] == nil, !failed.contains(url) else { return }
         if let s = model.store.sheet(url) { extra[url] = s; return }
@@ -586,6 +615,7 @@ struct SongView: View {
         main = nil
         flags = nil
         selected = 0
+        picked = false
         extra = [:]
         failed = []
         rendered = Rendered()

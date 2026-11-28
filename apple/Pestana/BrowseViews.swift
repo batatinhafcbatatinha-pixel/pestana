@@ -80,7 +80,13 @@ struct SearchView: View {
             if Task.isCancelled { return }
             loading = true
             error = nil
-            do { results = try await Source.search(q) } catch { self.error = "Sem conexão com a busca."; results = SearchResults() }
+            // Asked for more than shown, so songs and albums each reach 10 even when the other kind fills the answer.
+            do {
+                var r = try await Source.search(q, limit: 50)
+                r.songs = Array(r.songs.prefix(10))
+                r.albums = Array(r.albums.prefix(10))
+                results = r
+            } catch { self.error = "Sem conexão com a busca."; results = SearchResults() }
             loading = false
         }
     }
@@ -93,6 +99,8 @@ struct HeaderView: View {
     var url: String?
     var round: Bool
     var symbol: String?
+    /// Where tapping the subtitle goes (the artist's page, on an album).
+    var subtitleRoute: Route? = nil
     @Environment(\.reading) private var t
 
     var body: some View {
@@ -100,7 +108,13 @@ struct HeaderView: View {
             Thumb(text: title, symbol: symbol, url: url, round: round, size: 96)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.title2.bold()).foregroundColor(t.text).lineLimit(2)
-                if !subtitle.isEmpty { Text(subtitle).foregroundColor(t.muted).lineLimit(1) }
+                if !subtitle.isEmpty {
+                    if let r = subtitleRoute {
+                        NavigationLink(value: r) { Text(subtitle).foregroundColor(t.muted).lineLimit(1) }.buttonStyle(.plain)
+                    } else {
+                        Text(subtitle).foregroundColor(t.muted).lineLimit(1)
+                    }
+                }
             }
             Spacer()
         }
@@ -193,19 +207,13 @@ struct AlbumView: View {
         let shown = order.shown(songs)
         return List {
             HeaderView(title: album.name, subtitle: [album.artist, album.year].filter { !$0.isEmpty }.joined(separator: " · "),
-                       url: album.img.isEmpty ? images.album(album.key) : album.img, round: false, symbol: "opticaldisc").rowBackground(t)
+                       url: album.img.isEmpty ? images.album(album.key) : album.img, round: false, symbol: "opticaldisc",
+                       // The artist's name opens the artist's page.
+                       subtitleRoute: album.artistSlug.isEmpty ? nil : Route.artist(ArtistRef(slug: album.artistSlug, name: album.artist))).rowBackground(t)
             if loading { ProgressView().frame(maxWidth: .infinity).rowBackground(t) }
             if !songs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
-                        NavigationLink(value: Route.song(shown.first ?? songs[0], shown.isEmpty ? songs : shown)) {
-                            Text("Tocar em sequência").font(.subheadline).padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(Capsule().fill(t.surface)).foregroundColor(t.text)
-                        }.buttonStyle(.plain)
-                        NavigationLink(value: Route.artist(ArtistRef(slug: album.artistSlug, name: album.artist))) {
-                            Text("Artista").font(.subheadline).padding(.horizontal, 14).padding(.vertical, 7)
-                                .background(Capsule().fill(t.surface)).foregroundColor(t.text)
-                        }.buttonStyle(.plain)
                         Pill(text: "Baixar offline", selected: false) { model.downloadForOffline(songs) }
                     }
                 }.rowBackground(t)

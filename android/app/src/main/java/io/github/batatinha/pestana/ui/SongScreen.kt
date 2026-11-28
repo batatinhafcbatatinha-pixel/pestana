@@ -81,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.batatinha.pestana.AppState
+import io.github.batatinha.pestana.ArtistRef
 import io.github.batatinha.pestana.Metronome
 import io.github.batatinha.pestana.Native
 import io.github.batatinha.pestana.Rendered
@@ -141,6 +142,9 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
     var fav by remember(song.id, state.dataVersion) { mutableStateOf(state.db.isFav("song", song.id)) }
     var flags by remember(song.id) { mutableStateOf<Rendered?>(null) }
     var selected by rememberSaveable(song.id) { mutableStateOf(0) }
+    // A version chosen on this visit; until then, a library song opens on the version last used.
+    var picked by rememberSaveable(song.id) { mutableStateOf(false) }
+    val inLibrary = remember(song.id, state.dataVersion) { state.db.inLibrary(song.id) }
     val extra = remember(song.id) { mutableStateMapOf<String, Sheet>() }
     val failed = remember(song.id) { mutableStateMapOf<String, Boolean>() }
     var bassSheet by remember(song.id) { mutableStateOf<Sheet?>(null) }
@@ -236,6 +240,12 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                     !isBassVersion(v)
             }.forEach { add(Section(it.label.replaceFirstChar { c -> c.uppercase() }, it.url, 0)) }
         }
+    }
+    // The versions show up one by one (solos and riffs once read, the acoustic one once found).
+    LaunchedEffect(sections, inLibrary) {
+        if (picked || !inLibrary || prefs.section.isEmpty()) return@LaunchedEffect
+        val i = sections.indexOfFirst { it.label == prefs.section }
+        if (i >= 0) selected = i
     }
     val sec = sections.getOrNull(selected) ?: sections.firstOrNull()
 
@@ -355,6 +365,10 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                         m?.title?.ifBlank { null } ?: song.title,
                         m?.artist?.ifBlank { null } ?: song.artist,
                         onBack = { state.back() },
+                        // The artist's name opens the artist's page (imports have none).
+                        onSubtitle = if (song.isLocal || song.artistSlug.isBlank()) null else {
+                            { state.go(Screen.Artist(ArtistRef(song.artistSlug, m?.artist?.ifBlank { null } ?: song.artist))) }
+                        },
                     ) {
                         FavButton(fav) {
                             fav = state.toggleFavSong(SongRef(song.id, m?.title ?: song.title, m?.artist ?: song.artist))
@@ -365,7 +379,12 @@ fun SongScreen(state: AppState, song: SongRef, queue: List<SongRef>) {
                             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            sections.forEachIndexed { i, s -> Pill(s.label, i == selected) { selected = i } }
+                            sections.forEachIndexed { i, s ->
+                                Pill(s.label, i == selected) {
+                                    selected = i; picked = true
+                                    prefs = prefs.copy(section = if (i == 0) "" else s.label)
+                                }
+                            }
                         }
                     }
                     HorizontalDivider(color = t.line, thickness = 0.5.dp, modifier = Modifier.padding(top = 6.dp))

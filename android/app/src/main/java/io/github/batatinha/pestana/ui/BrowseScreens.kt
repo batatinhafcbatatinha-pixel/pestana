@@ -3,7 +3,6 @@ package io.github.batatinha.pestana.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -88,7 +87,8 @@ fun HomeScreen(state: AppState) {
         delay(280)
         loading = true
         error = null
-        results = runCatching { Source.search(ctx, query) }.getOrElse { error = "Sem conexão com a busca."; SearchResults() }
+        // Asked for more than shown, so songs and albums each reach 10 even when the other kind fills the answer.
+        results = runCatching { Source.search(ctx, query, limit = 50).let { it.copy(songs = it.songs.take(10), albums = it.albums.take(10)) } }.getOrElse { error = "Sem conexão com a busca."; SearchResults() }
         loading = false
     }
 
@@ -172,14 +172,20 @@ fun HomeScreen(state: AppState) {
 
 /** Big photo + name header for artist and album pages. */
 @Composable
-private fun Header(title: String, subtitle: String, url: String?, round: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector?) {
+private fun Header(
+    title: String, subtitle: String, url: String?, round: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector?,
+    onSubtitle: (() -> Unit)? = null,
+) {
     val t = LocalReading.current
     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Monogram(title, icon, round = round, url = url, size = 96.dp)
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = t.text, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-            if (subtitle.isNotBlank()) Text(subtitle, color = t.muted, fontSize = 14.sp, maxLines = 1)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, color = t.muted, fontSize = 14.sp, maxLines = 1,
+                    modifier = if (onSubtitle != null) Modifier.clickable(onClick = onSubtitle) else Modifier)
+            }
         }
     }
 }
@@ -256,17 +262,13 @@ fun AlbumScreen(state: AppState, album: AlbumRef) {
             FavButton(fav) { fav = state.toggleFavAlbum(album) }
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = ListPadding) {
-            item { Header(album.name, listOf(album.artist, album.year).filter { it.isNotBlank() }.joinToString(" · "), img, round = false, icon = Ic.Album) }
+            // The artist's name opens the artist's page.
+            val openArtist: (() -> Unit)? = if (album.artistSlug.isBlank()) null else { { state.go(Screen.Artist(ArtistRef(album.artistSlug, album.artist))) } }
+            item { Header(album.name, listOf(album.artist, album.year).filter { it.isNotBlank() }.joinToString(" · "), img, round = false, icon = Ic.Album, onSubtitle = openArtist) }
             if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), color = LocalReading.current.chord, trackColor = LocalReading.current.bg) }
             val list = songs.orEmpty()
             if (list.isEmpty() && !loading) item { EmptyState("Sem músicas", "A busca não trouxe as faixas deste álbum.") }
             if (list.isNotEmpty()) {
-                item {
-                    Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Pill("Tocar em sequência", false) { order.shown.firstOrNull()?.let { state.go(Screen.Song(it, order.shown)) } }
-                        Pill("Artista", false) { state.go(Screen.Artist(ArtistRef(album.artistSlug, album.artist))) }
-                    }
-                }
                 item { order.bar() }
                 if (order.shown.isEmpty()) item { EmptyState("Nenhuma música com esses filtros", "Os filtros olham as cifras salvas no aparelho.") }
                 items(order.shown, key = { it.id }) { SongRow(state, it, order.shown) }

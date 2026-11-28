@@ -30,9 +30,10 @@ enum Source {
         return (code, String(decoding: data, as: UTF8.self))
     }
 
-    static func search(_ query: String) async throws -> SearchResults {
+    /// `limit` is how many results (artists, songs and albums together) the endpoint sends; it sends 10 by default.
+    static func search(_ query: String, limit: Int = 10) async throws -> SearchResults {
         let q = query.trimmingCharacters(in: .whitespaces).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let (code, body) = try await get(searchURL + q)
+        let (code, body) = try await get(searchURL + q + "&limit=\(limit)")
         guard code == 200 else { throw SourceError.message("Busca indisponível (\(code))") }
         return parseSearch(body)
     }

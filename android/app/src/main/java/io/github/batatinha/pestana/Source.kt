@@ -55,10 +55,11 @@ object Source {
         }
     }
 
-    suspend fun search(ctx: Context, query: String): SearchResults = withContext(Dispatchers.IO) {
+    /** `limit` is how many results (artists, songs and albums together) the endpoint sends; it sends 10 by default. */
+    suspend fun search(ctx: Context, query: String, limit: Int = 10): SearchResults = withContext(Dispatchers.IO) {
         // connectTimeout does not cover DNS; bound the whole request.
         val (code, body) = kotlinx.coroutines.withTimeout(15_000) {
-            kotlinx.coroutines.runInterruptible { get(ctx, SEARCH + URLEncoder.encode(query.trim(), "UTF-8")) }
+            kotlinx.coroutines.runInterruptible { get(ctx, SEARCH + URLEncoder.encode(query.trim(), "UTF-8") + "&limit=$limit") }
         }
         if (code != 200) error("Busca indisponível ($code)")
         parseSearch(body)

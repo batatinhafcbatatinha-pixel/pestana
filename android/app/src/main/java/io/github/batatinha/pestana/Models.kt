@@ -198,6 +198,8 @@ data class SongPrefs(
     val speed: Int = 8,
     val simplify: Boolean = false,
     val capo: Int = -1,
+    /** The version last opened ("Simplificada", "Solos"…); blank is Principal. */
+    val section: String = "",
 )
 
 data class Playlist(val id: Long, val name: String, val count: Int)
